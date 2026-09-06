@@ -1,0 +1,206 @@
+"""Incremental discovery from persistent Search Sources.
+
+This module deliberately has no dependency on ApplyJob/apply_one. Its only
+output is PostgreSQL `vacancy_pipeline` rows. Sending is a separate future
+worker fed exclusively by approved send jobs.
+"""
+
+from __future__ import annotations
+
+import asyncio
+import logging
+from datetime import UTC, datetime
+from urllib.parse import urlencode
+
+from app.db.supabase import service_client
+from app.hh import web
+from app.hh.page_json import find_state
+from app.services.form_filler import (
+    WebSessionExpired,
+    load_web_session,
+    report_dead_session,
+)
+from app.services.vacancy_pipeline import persist_discovered
+
+logger = logging.getLogger(__name__)
+
+# Initial import is intentionally narrow. Later runs walk until they overlap the
+# previous head page. For a single-user CIO/CDTO search this avoids repeatedly
+# paging through a large historical result set.
+INITIAL_SCAN_PAGES = 3
+INCREMENTAL_MAX_PAGES = 20
+
+
+def _now() -> str:
+    return datetime.now(UTC).isoformat()
+
+
+def _load_enabled_sources(user_id: str) -> list[dict]:
+    res = (
+        service_client.table("vacancy_search_sources")
+        .select("id,resume_id,name,source_type,query_pairs,cursor,enabled")
+        .eq("user_id", user_id)
+        .eq("enabled", True)
+        .in_("source_type", ["search_url", "hh_autosearch"])
+        .execute()
+    )
+    return res.data or []
+
+
+def _existing_application_ids(user_id: str, vacancy_ids: list[str]) -> set[str]:
+    if not vacancy_ids:
+        return set()
+    res = (
+        service_client.table("applications")
+        .select("vacancy_id")
+        .eq("user_id", user_id)
+        .in_("vacancy_id", vacancy_ids)
+        .execute()
+    )
+    return {str(row["vacancy_id"]) for row in (res.data or []) if row.get("vacancy_id")}
+
+
+def _update_source(source_id: str, **changes) -> None:
+    service_client.table("vacancy_search_sources").update(
+        {**changes, "updated_at": _now()}
+    ).eq("id", source_id).execute()
+
+
+def _request_pairs(source: dict, page: int) -> list[tuple[str, str]]:
+    """Preserve duplicate HH query keys exactly as stored.
+
+    Pagination and ordering are runtime concerns, so stale values copied from a
+    browser URL are removed and replaced here.
+    """
+    pairs: list[tuple[str, str]] = []
+    for item in source.get("query_pairs") or []:
+        key = str((item or {}).get("key") or "")
+        if not key or key in {"page", "items_on_page", "order_by"}:
+            continue
+        pairs.append((key, str((item or {}).get("value") or "")))
+    pairs.append(("order_by", "publication_time"))
+    pairs.append(("page", str(page)))
+    return pairs
+
+
+async def _search_page(user_id: str, source: dict, page: int) -> tuple[list[dict], int]:
+    """Search through the logged-in HH web session with duplicate query keys."""
+    session = await load_web_session(user_id)
+    url = f"{web.SEARCH_URL}?{urlencode(_request_pairs(source, page))}"
+    resp = await asyncio.to_thread(web._get, session, user_id, url)
+    data = find_state(resp.text, "vacancySearchResult")
+    raw_items = data.get("vacancies") or []
+    items = [
+        item
+        for item in (web._normalise_vacancy(raw) for raw in raw_items)
+        if item.get("id")
+    ]
+    return items, int(data.get("totalResults") or 0)
+
+
+async def discover_source(user_id: str, source: dict) -> dict[str, int | bool]:
+    """Ingest one source until the previous head is reached or the scan cap hits."""
+    source_id = str(source["id"])
+    cursor = source.get("cursor") or {}
+    previous_head = {str(v) for v in (cursor.get("head_ids") or []) if v}
+    initial = not previous_head
+    page_limit = INITIAL_SCAN_PAGES if initial else INCREMENTAL_MAX_PAGES
+
+    fetched = 0
+    persisted = 0
+    skipped_applied = 0
+    overlap_found = False
+    first_page_ids: list[str] = []
+    checked_at = _now()
+    await asyncio.to_thread(_update_source, source_id, last_checked_at=checked_at, last_error=None)
+
+    try:
+        for page in range(page_limit):
+            items, total = await _search_page(user_id, source, page)
+            if not items:
+                overlap_found = bool(previous_head) or initial
+                break
+            ids = [str(item["id"]) for item in items]
+            if page == 0:
+                first_page_ids = ids[:40]
+            applied = await asyncio.to_thread(_existing_application_ids, user_id, ids)
+
+            stop_after_page = False
+            for item in items:
+                vid = str(item["id"])
+                if previous_head and vid in previous_head:
+                    overlap_found = True
+                    stop_after_page = True
+                    break
+                fetched += 1
+                if vid in applied:
+                    skipped_applied += 1
+                    continue
+                await asyncio.to_thread(
+                    persist_discovered,
+                    user_id=user_id,
+                    resume_id=source.get("resume_id"),
+                    vacancy=item,
+                    source_id=source_id,
+                )
+                persisted += 1
+
+            if stop_after_page:
+                break
+            if total and (page + 1) * max(len(items), 1) >= total:
+                overlap_found = True
+                break
+    except WebSessionExpired as ex:
+        await report_dead_session(user_id, ex)
+        await asyncio.to_thread(_update_source, source_id, last_error=str(ex))
+        raise
+    except Exception as ex:
+        await asyncio.to_thread(_update_source, source_id, last_error=str(ex)[:1000])
+        raise
+
+    # First import establishes a boundary by design. Incremental scans should
+    # normally find the previous head. If the result stream changed so much that
+    # 20 pages contain no overlap, persist what we saw but surface the condition.
+    warning = None
+    if not initial and not overlap_found:
+        warning = "cursor_overlap_not_found_within_scan_limit"
+
+    new_cursor = {
+        "version": 1,
+        "head_ids": first_page_ids,
+        "checked_at": checked_at,
+        "overlap_found": overlap_found,
+    }
+    await asyncio.to_thread(
+        _update_source,
+        source_id,
+        cursor=new_cursor,
+        last_success_at=_now(),
+        last_error=warning,
+    )
+    return {
+        "fetched": fetched,
+        "persisted": persisted,
+        "skipped_applied": skipped_applied,
+        "overlap_found": overlap_found,
+    }
+
+
+async def discover_user(user_id: str) -> dict[str, int]:
+    """Run discovery for every enabled persistent source of one user."""
+    sources = await asyncio.to_thread(_load_enabled_sources, user_id)
+    summary = {"sources": len(sources), "fetched": 0, "persisted": 0, "errors": 0}
+    for source in sources:
+        try:
+            result = await discover_source(user_id, source)
+        except WebSessionExpired:
+            summary["errors"] += 1
+            break  # all sources share the same dead HH session
+        except Exception:
+            summary["errors"] += 1
+            logger.exception("discovery failed user=%s source=%s", user_id, source.get("id"))
+            continue
+        summary["fetched"] += int(result["fetched"])
+        summary["persisted"] += int(result["persisted"])
+    logger.info("discovery user=%s summary=%s", user_id, summary)
+    return summary

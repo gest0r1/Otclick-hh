@@ -15,6 +15,7 @@ from app.api import (
     qa,
     recruiter,
     resumes,
+    search_sources,
     webhooks,
     worker,
 )
@@ -24,6 +25,7 @@ api_router = APIRouter()
 api_router.include_router(auth.router)
 api_router.include_router(resumes.router)
 api_router.include_router(filters.router)
+api_router.include_router(search_sources.router)
 api_router.include_router(worker.router)
 api_router.include_router(captcha.router)
 api_router.include_router(internal.router)
