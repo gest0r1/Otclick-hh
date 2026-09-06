@@ -23,6 +23,11 @@ class Settings(BaseSettings):
     DEBUG_ENDPOINTS: bool = False
     LOG_LEVEL: str = "INFO"
 
+    # Hard safety gate for every real vacancy response. Development, discovery,
+    # scoring and review must work with this false. Enabling it is necessary but
+    # not sufficient for the new funnel: a send job still needs explicit approval.
+    ALLOW_REAL_APPLY: bool = False
+
     # hh OAuth application. Empty → the official Android app's keys (see
     # app/hh/client_keys.py), which answer `geo_forbidden` outside their region.
     # Set all three together; HH_REDIRECT_URI must match the app's registration.
