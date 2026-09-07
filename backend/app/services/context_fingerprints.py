@@ -2,6 +2,7 @@
 
 Fingerprints make stale AI outputs visible without mutating lifecycle state.
 They contain no secrets and are safe to persist inside existing JSON metadata.
+Prompt contract versions live here so writers/readers compare the same version.
 """
 
 from __future__ import annotations
@@ -9,6 +10,9 @@ from __future__ import annotations
 import hashlib
 import json
 from typing import Any
+
+SCORER_PROMPT_VERSION = 1
+COVER_PROMPT_VERSION = 1
 
 
 def _canonical(value: Any) -> bytes:
@@ -90,7 +94,7 @@ def score_context(
     rules: list[dict] | None,
     vacancy: dict,
     model: str,
-    prompt_version: int,
+    prompt_version: int = SCORER_PROMPT_VERSION,
 ) -> dict[str, Any]:
     candidate = candidate_hash(context)
     rule_set = rules_hash(rules)
@@ -138,7 +142,7 @@ def cover_context(
     vacancy: dict,
     resume_row: dict,
     model: str,
-    prompt_version: int,
+    prompt_version: int = COVER_PROMPT_VERSION,
 ) -> dict[str, Any]:
     payload = {
         "candidate_hash": candidate_hash(context),
