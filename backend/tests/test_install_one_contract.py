@@ -33,8 +33,19 @@ def test_one_command_installer_hides_noisy_package_and_docker_progress():
     assert 'docker compose build api frontend >>"$LOG_FILE" 2>&1' in wrapper  # emergency override only
     assert 'docker compose up -d --no-build --pull never >>"$LOG_FILE" 2>&1' in wrapper
     assert 'details -> $LOG_FILE' in wrapper
-    assert 'tail -n 30 "$LOG_FILE"' in wrapper
     assert 'trap - ERR' in wrapper
+
+
+def test_one_command_installer_prints_compose_failure_diagnostics_without_tailing_its_own_log():
+    wrapper = _wrapper()
+
+    assert 'diagnose_stack() {' in wrapper
+    assert 'docker compose ps -a >&2' in wrapper
+    assert 'docker compose logs --no-color --tail=120 "$service" >&2' in wrapper
+    assert 'docker compose up failed before health checks completed.' in wrapper
+    assert 'if ! docker compose up -d --no-build --pull never' in wrapper
+    assert 'tail -n 30 "$LOG_FILE"' not in wrapper
+    assert 'cd $INSTALL_DIR && docker compose up -d --no-build --pull never' in wrapper
 
 
 def test_one_command_installer_uses_exact_sha_public_prerelease_by_default():
