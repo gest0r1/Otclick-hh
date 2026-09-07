@@ -1,0 +1,122 @@
+name: Build Linux install artifact
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+      - "feature/**"
+    paths:
+      - "backend/**"
+      - "frontend/**"
+      - "infra/**"
+      - "pyproject.toml"
+      - "uv.lock"
+      - ".dockerignore"
+      - "docker-compose.yml"
+      - "install.sh"
+      - "install-one.sh"
+      - ".github/workflows/build-artifact.yml"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: install-artifact-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build-linux-amd64:
+    name: Build Linux amd64 bundle
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+
+      - name: Prepare deterministic build config
+        run: |
+          set -euo pipefail
+          bash -n install.sh
+          bash -n install-one.sh
+          python3 -m py_compile infra/bootstrap.py infra/verify_llm.py backend/scripts/load_candidate_data.py
+          python3 infra/bootstrap.py --openai-key ci-placeholder
+          docker compose config >/dev/null
+
+      - name: Build Otclick application images
+        run: |
+          set -euo pipefail
+          docker compose build api frontend
+          docker image inspect aiautoclicker-backend:latest >/dev/null
+          docker image inspect aiautoclicker-frontend:latest >/dev/null
+
+      - name: Package install artifact
+        id: package
+        run: |
+          set -euo pipefail
+          command -v zstd >/dev/null 2>&1 || { sudo apt-get update -qq && sudo apt-get install -y -qq zstd; }
+          mkdir -p artifacts
+
+          docker save \
+            aiautoclicker-backend:latest \
+            aiautoclicker-frontend:latest \
+            | zstd -T0 -10 -o artifacts/otclick-images-linux-amd64.tar.zst
+
+          cp install.sh install-one.sh docker-compose.yml artifacts/
+
+          python3 - <<'PY'
+          import json
+          import os
+          import platform
+          from pathlib import Path
+
+          out = Path("artifacts")
+          manifest = {
+              "schema_version": 1,
+              "repository": os.environ.get("GITHUB_REPOSITORY"),
+              "git_sha": os.environ.get("GITHUB_SHA"),
+              "git_ref": os.environ.get("GITHUB_REF"),
+              "workflow_run_id": os.environ.get("GITHUB_RUN_ID"),
+              "architecture": "linux/amd64",
+              "runner_machine": platform.machine(),
+              "docker_images": [
+                  "aiautoclicker-backend:latest",
+                  "aiautoclicker-frontend:latest",
+              ],
+              "bundle": "otclick-images-linux-amd64.tar.zst",
+          }
+          (out / "manifest.json").write_text(
+              json.dumps(manifest, ensure_ascii=False, indent=2) + "\n",
+              encoding="utf-8",
+          )
+          PY
+
+          (cd artifacts && sha256sum \
+            otclick-images-linux-amd64.tar.zst \
+            install.sh install-one.sh docker-compose.yml manifest.json \
+            > SHA256SUMS)
+
+          echo "bundle_size=$(du -h artifacts/otclick-images-linux-amd64.tar.zst | cut -f1)" >> "$GITHUB_OUTPUT"
+
+      - name: Upload Linux install artifact
+        id: upload
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: otclick-linux-amd64-${{ github.sha }}
+          path: artifacts/
+          if-no-files-found: error
+          retention-days: 7
+          # The Docker bundle is already zstd-compressed; recompressing it only
+          # wastes runner time and does not materially reduce artifact size.
+          compression-level: 0
+
+      - name: Publish artifact summary
+        run: |
+          {
+            echo "### Otclick Linux install artifact"
+            echo
+            echo "- Commit: \`${GITHUB_SHA}\`"
+            echo "- Bundle: \`otclick-images-linux-amd64.tar.zst\` (${{ steps.package.outputs.bundle_size }})"
+            echo "- Artifact: [download](${{ steps.upload.outputs.artifact-url }})"
+            echo "- SHA256: included in \`SHA256SUMS\`"
+            echo "- Retention: 7 days"
+          } >> "$GITHUB_STEP_SUMMARY"
