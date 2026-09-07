@@ -1,4 +1,8 @@
-from fastapi import APIRouter, Depends, status
+from __future__ import annotations
+
+import asyncio
+
+from fastapi import APIRouter, Depends, HTTPException, status
 
 from app.api.deps import get_current_user
 from app.schemas.search_sources import (
@@ -12,6 +16,7 @@ from app.schemas.search_sources import (
 from app.services import pipeline_scoring, search_source_service, source_discovery
 
 router = APIRouter(prefix="/api/search-sources", tags=["search-sources"])
+_manual_run_locks: dict[str, asyncio.Lock] = {}
 
 
 @router.post("/preview-url", response_model=SearchURLPreviewResponse)
@@ -29,8 +34,12 @@ async def run_now(user_id: str = Depends(get_current_user)):
     No sender code is imported or invoked here. Discovery is idempotent at the
     persistent pipeline layer; scoring atomically claims discovered rows.
     """
-    discovery = await source_discovery.discover_user(user_id)
-    scoring = await pipeline_scoring.score_user(user_id)
+    lock = _manual_run_locks.setdefault(user_id, asyncio.Lock())
+    if lock.locked():
+        raise HTTPException(status_code=409, detail="manual search run is already in progress")
+    async with lock:
+        discovery = await source_discovery.discover_user(user_id)
+        scoring = await pipeline_scoring.score_user(user_id)
     return ManualSearchRunResponse(discovery=discovery, scoring=scoring)
 
 
