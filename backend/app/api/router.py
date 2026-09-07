@@ -16,6 +16,7 @@ from app.api import (
     recruiter,
     resumes,
     search_sources,
+    selection_rules,
     send_queue,
     vacancies,
     webhooks,
@@ -29,6 +30,7 @@ api_router.include_router(resumes.router)
 api_router.include_router(filters.router)
 api_router.include_router(search_sources.router)
 api_router.include_router(vacancies.router)
+api_router.include_router(selection_rules.router)
 api_router.include_router(send_queue.router)
 api_router.include_router(worker.router)
 api_router.include_router(captcha.router)
