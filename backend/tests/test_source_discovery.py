@@ -23,6 +23,7 @@ async def test_discovery_stops_when_previous_head_is_reached_and_updates_stats()
     ]
     persisted: list[str] = []
     source_updates: list[dict] = []
+    stat_updates: list[tuple[list[str], dict]] = []
 
     def fake_persist(**kwargs):
         persisted.append(str(kwargs["vacancy"]["id"]))
@@ -32,17 +33,25 @@ async def test_discovery_stops_when_previous_head_is_reached_and_updates_stats()
         assert source_id == "s1"
         source_updates.append(changes)
 
+    def fake_stats(source_ids, **counts):
+        stat_updates.append((source_ids, counts))
+
     with (
         patch.object(sd, "_search_page", new=AsyncMock(return_value=(page, 100))),
         patch.object(sd, "_existing_application_ids", return_value=set()),
+        patch.object(sd, "_existing_pipeline_ids", return_value=set()),
         patch.object(sd, "persist_discovered", side_effect=fake_persist),
         patch.object(sd, "_update_source", side_effect=fake_update),
+        patch.object(sd.source_statistics, "increment", side_effect=fake_stats),
     ):
         result = await sd.discover_source("u1", source)
 
     assert persisted == ["new-1"]
     assert result["overlap_found"] is True
     assert result["persisted"] == 1
+    assert result["new"] == 1
+    assert result["duplicate"] == 0
+    assert stat_updates == [(["s1"], {"new": 1, "duplicate": 0})]
     final = source_updates[-1]
     assert final["cursor"]["version"] == 2
     assert final["cursor"]["head_ids"] == ["new-1", "old-1", "older"]
@@ -54,7 +63,32 @@ async def test_discovery_stops_when_previous_head_is_reached_and_updates_stats()
         "errors": 1,
     }
     assert final["cursor"]["last_run"]["persisted"] == 1
+    assert final["cursor"]["last_run"]["new"] == 1
+    assert final["cursor"]["last_run"]["duplicate"] == 0
     assert final["last_error"] is None
+
+
+@pytest.mark.asyncio
+async def test_discovery_counts_existing_pipeline_vacancy_as_duplicate():
+    from app.services import source_discovery as sd
+
+    source = {"id": "s1", "resume_id": "r1", "cursor": {}}
+    page = [{"id": "123", "name": "CIO", "employer": {"id": "1", "name": "A"}}]
+    stat_updates: list[dict] = []
+
+    with (
+        patch.object(sd, "_search_page", new=AsyncMock(return_value=(page, 1))),
+        patch.object(sd, "_existing_application_ids", return_value=set()),
+        patch.object(sd, "_existing_pipeline_ids", return_value={"123"}),
+        patch.object(sd, "persist_discovered", return_value={"id": "p1"}),
+        patch.object(sd, "_update_source"),
+        patch.object(sd.source_statistics, "increment", side_effect=lambda ids, **counts: stat_updates.append(counts)),
+    ):
+        result = await sd.discover_source("u1", source)
+
+    assert result["new"] == 0
+    assert result["duplicate"] == 1
+    assert stat_updates == [{"new": 0, "duplicate": 1}]
 
 
 @pytest.mark.asyncio
