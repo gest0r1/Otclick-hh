@@ -62,11 +62,16 @@ jobs:
           )
 
           # Rule matching is intentionally deterministic substring matching, not
-          # stemming/morphology; use a stable substring across Russian cases.
+          # stemming/morphology; use stable stems across Russian cases.
           replace_once(
               "backend/tests/test_selection_rules.py",
               '        "title_any": ["инфраструктура"],\n',
               '        "title_any": ["инфраструктур"],\n',
+          )
+          replace_once(
+              "backend/tests/test_selection_rules.py",
+              '        "description_any": ["дежурство 24/7"],\n',
+              '        "description_any": ["дежурств"],\n',
           )
 
           # worker_enabled now controls discovery/scoring only. Legacy apply is
