@@ -223,13 +223,36 @@ async def generate_draft(user_id: str, pipeline_id: str) -> dict:
     return await vacancy_review_service.get_vacancy(user_id, pipeline_id)
 
 
+def _active_send_job(user_id: str, pipeline_id: str) -> dict | None:
+    res = (
+        service_client.table("application_send_queue")
+        .select("id,status")
+        .eq("user_id", user_id)
+        .eq("vacancy_pipeline_id", pipeline_id)
+        .maybe_single()
+        .execute()
+    )
+    row = res.data if res and res.data else None
+    if row and row.get("status") != "cancelled":
+        return row
+    return None
+
+
 async def save_draft(user_id: str, pipeline_id: str, text: str) -> dict:
     vacancy = await vacancy_review_service.get_vacancy(user_id, pipeline_id)
-    if vacancy["status"] != "letter_draft":
+    if vacancy["status"] not in {"letter_draft", "approved"}:
         raise HTTPException(
             status_code=409,
-            detail=f"draft can only be edited from letter_draft, not {vacancy['status']}",
+            detail=f"draft can only be edited from letter_draft/approved, not {vacancy['status']}",
         )
+    if vacancy["status"] == "approved":
+        active = await asyncio.to_thread(_active_send_job, user_id, pipeline_id)
+        if active:
+            raise HTTPException(
+                status_code=409,
+                detail=f"approved letter cannot be edited while send job is {active['status']}",
+            )
+
     clean = sanitize_ai_text(text).strip()
     if not clean:
         raise HTTPException(status_code=400, detail="cover letter draft cannot be empty")
@@ -238,22 +261,32 @@ async def save_draft(user_id: str, pipeline_id: str, text: str) -> dict:
 
     meta = dict(vacancy.get("cover_letter_meta") or {})
     meta["edited_by_user"] = True
-    res = (
-        service_client.table("vacancy_pipeline")
-        .update(
-            {
-                "cover_letter_draft": clean,
-                "cover_letter_meta": meta,
-                "approved_letter_hash": None,
-                "approved_at": None,
-                "updated_at": vacancy_pipeline._now(),
-            }
+    changes = {
+        "cover_letter_draft": clean,
+        "cover_letter_meta": meta,
+        "approved_letter_hash": None,
+        "approved_at": None,
+    }
+    if vacancy["status"] == "approved":
+        changed = await asyncio.to_thread(
+            vacancy_pipeline.transition,
+            user_id=user_id,
+            pipeline_id=pipeline_id,
+            from_statuses=["approved"],
+            to_status="letter_draft",
+            changes=changes,
         )
-        .eq("id", pipeline_id)
-        .eq("user_id", user_id)
-        .eq("status", "letter_draft")
-        .execute()
-    )
-    if not (res and res.data):
-        raise HTTPException(status_code=409, detail="vacancy changed concurrently")
+        if not changed:
+            raise HTTPException(status_code=409, detail="vacancy changed concurrently")
+    else:
+        res = (
+            service_client.table("vacancy_pipeline")
+            .update({**changes, "updated_at": vacancy_pipeline._now()})
+            .eq("id", pipeline_id)
+            .eq("user_id", user_id)
+            .eq("status", "letter_draft")
+            .execute()
+        )
+        if not (res and res.data):
+            raise HTTPException(status_code=409, detail="vacancy changed concurrently")
     return await vacancy_review_service.get_vacancy(user_id, pipeline_id)
