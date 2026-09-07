@@ -10,6 +10,7 @@ const ITEMS = [
   { href: "/vacancies/profile", label: "Профиль" },
   { href: "/vacancies/rules", label: "Правила", exact: true },
   { href: "/vacancies/rules/manage", label: "Управление" },
+  { href: "/vacancies/send", label: "Отправка" },
 ];
 
 export default function VacanciesLayout({ children }: { children: ReactNode }) {
