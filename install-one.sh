@@ -49,7 +49,7 @@ replace_once(
   log "[1/8] checking host prerequisites"
   export DEBIAN_FRONTEND=noninteractive
   apt-get update >>"$LOG_FILE" 2>&1
-  apt-get install -y git curl ca-certificates python3 unzip zstd >>"$LOG_FILE" 2>&1
+  apt-get install -y git curl ca-certificates python3 zstd >>"$LOG_FILE" 2>&1
 
   if command -v docker >/dev/null 2>&1 && docker compose version >/dev/null 2>&1; then
     log "      existing Docker + Compose detected; package stack left untouched"
@@ -92,95 +92,66 @@ replace_once(
 }
 ''',
 '''load_prebuilt_app_images() {
-  local git_sha artifact_name api_url metadata_file artifact_url artifact_digest artifact_size
-  local artifact_zip actual_digest bundle_member
+  local git_sha release_tag release_base manifest_file sums_file bundle_file
+  local manifest_sha expected_digest actual_digest
   git_sha="$(git rev-parse HEAD)"
-  artifact_name="otclick-linux-amd64-${git_sha}"
-  api_url="https://api.github.com/repos/gest0r1/Otclick-hh/actions/artifacts?name=${artifact_name}&per_page=100"
-  metadata_file="$(mktemp /tmp/otclick-artifact-meta.XXXXXX.json)"
-  artifact_zip="$(mktemp /tmp/otclick-artifact.XXXXXX.zip)"
+  release_tag="install-${git_sha}"
+  release_base="https://github.com/gest0r1/Otclick-hh/releases/download/${release_tag}"
+  manifest_file="$(mktemp /tmp/otclick-manifest.XXXXXX.json)"
+  sums_file="$(mktemp /tmp/otclick-sha256.XXXXXX.txt)"
+  bundle_file="$(mktemp /tmp/otclick-images.XXXXXX.tar.zst)"
 
-  # GitHub documents unauthenticated read access for public repository Actions
-  # artifacts. Select only an unexpired artifact produced from this exact SHA.
-  curl -fsSL \
-    -H "Accept: application/vnd.github+json" \
-    -H "X-GitHub-Api-Version: 2026-03-10" \
-    "$api_url" -o "$metadata_file"
-
-  mapfile -t artifact_meta < <(python3 - "$metadata_file" "$git_sha" "$artifact_name" <<'PYART'
-import json
-import sys
-
-path, sha, name = sys.argv[1:]
-data = json.load(open(path, encoding="utf-8"))
-for artifact in data.get("artifacts", []):
-    if artifact.get("name") != name or artifact.get("expired"):
-        continue
-    run = artifact.get("workflow_run") or {}
-    if run.get("head_sha") != sha:
-        continue
-    print(artifact.get("archive_download_url", ""))
-    print(artifact.get("digest", ""))
-    print(artifact.get("size_in_bytes", 0))
-    break
-PYART
-  )
-  rm -f "$metadata_file"
-
-  if [[ "${#artifact_meta[@]}" -lt 3 || -z "${artifact_meta[0]}" ]]; then
-    echo "[otclick] prebuilt artifact is not ready for commit ${git_sha}." >&2
+  # Release assets are the public distribution channel. GitHub Actions artifacts
+  # remain the short-lived CI/diagnostic copy; the release tag is tied to the
+  # exact repository commit so we never install images from another revision.
+  if ! curl -fsSL --retry 2 --retry-delay 2 \
+      "${release_base}/manifest.json" -o "$manifest_file"; then
+    rm -f "$manifest_file" "$sums_file" "$bundle_file"
+    echo "[otclick] prebuilt release is not ready for commit ${git_sha}." >&2
     echo "[otclick] Check: https://github.com/gest0r1/Otclick-hh/actions/workflows/build-artifact.yml" >&2
     echo "[otclick] Local build is intentionally disabled on low-memory hosts." >&2
     echo "[otclick] Emergency override: OTCLICK_ALLOW_LOCAL_BUILD=1" >&2
     return 22
   fi
 
-  artifact_url="${artifact_meta[0]}"
-  artifact_digest="${artifact_meta[1]}"
-  artifact_size="${artifact_meta[2]}"
-  log "[7/8] downloading prebuilt Otclick images (~$((artifact_size / 1024 / 1024)) MiB)"
-
-  curl -fL --retry 3 --retry-delay 2 --retry-all-errors \
-    -H "Accept: application/vnd.github+json" \
-    -H "X-GitHub-Api-Version: 2026-03-10" \
-    "$artifact_url" -o "$artifact_zip" >>"$LOG_FILE" 2>&1
-
-  if [[ "$artifact_digest" == sha256:* ]]; then
-    actual_digest="sha256:$(sha256sum "$artifact_zip" | awk '{print $1}')"
-    if [[ "$actual_digest" != "$artifact_digest" ]]; then
-      rm -f "$artifact_zip"
-      echo "[otclick] artifact SHA-256 mismatch: expected $artifact_digest, got $actual_digest" >&2
-      return 23
-    fi
-  fi
-
-  bundle_member="$(python3 - "$artifact_zip" "$git_sha" <<'PYZIP'
+  manifest_sha="$(python3 - "$manifest_file" <<'PYMAN'
 import json
 import sys
-import zipfile
 
-archive, expected_sha = sys.argv[1:]
-with zipfile.ZipFile(archive) as zf:
-    names = zf.namelist()
-    manifest_name = next((n for n in names if n == "manifest.json" or n.endswith("/manifest.json")), None)
-    if not manifest_name:
-        raise SystemExit("manifest.json missing from artifact")
-    manifest = json.loads(zf.read(manifest_name))
-    if manifest.get("git_sha") != expected_sha:
-        raise SystemExit(
-            f"artifact manifest SHA mismatch: {manifest.get('git_sha')} != {expected_sha}"
-        )
-    bundle = manifest.get("bundle") or "otclick-images-linux-amd64.tar.zst"
-    member = next((n for n in names if n == bundle or n.endswith("/" + bundle)), None)
-    if not member:
-        raise SystemExit(f"{bundle} missing from artifact")
-    print(member)
-PYZIP
+manifest = json.load(open(sys.argv[1], encoding="utf-8"))
+print(manifest.get("git_sha", ""))
+PYMAN
   )"
+  if [[ "$manifest_sha" != "$git_sha" ]]; then
+    rm -f "$manifest_file" "$sums_file" "$bundle_file"
+    echo "[otclick] release manifest SHA mismatch: ${manifest_sha} != ${git_sha}" >&2
+    return 23
+  fi
 
-  log "      GitHub artifact verified; loading Docker images"
-  unzip -p "$artifact_zip" "$bundle_member" | zstd -d -c | docker load >>"$LOG_FILE" 2>&1
-  rm -f "$artifact_zip"
+  curl -fsSL --retry 2 --retry-delay 2 \
+    "${release_base}/SHA256SUMS" -o "$sums_file"
+  expected_digest="$(awk '$2 == "otclick-images-linux-amd64.tar.zst" {print $1}' "$sums_file")"
+  if [[ ! "$expected_digest" =~ ^[0-9a-f]{64}$ ]]; then
+    rm -f "$manifest_file" "$sums_file" "$bundle_file"
+    echo "[otclick] release SHA256SUMS does not contain the image bundle digest" >&2
+    return 23
+  fi
+
+  log "[7/8] downloading prebuilt Otclick images (~1 GiB, no local build)"
+  curl -fL --retry 3 --retry-delay 2 --retry-all-errors \
+    "${release_base}/otclick-images-linux-amd64.tar.zst" \
+    -o "$bundle_file" >>"$LOG_FILE" 2>&1
+
+  actual_digest="$(sha256sum "$bundle_file" | awk '{print $1}')"
+  if [[ "$actual_digest" != "$expected_digest" ]]; then
+    rm -f "$manifest_file" "$sums_file" "$bundle_file"
+    echo "[otclick] release bundle SHA-256 mismatch" >&2
+    return 23
+  fi
+
+  log "      release bundle verified; loading Docker images"
+  zstd -d -c "$bundle_file" | docker load >>"$LOG_FILE" 2>&1
+  rm -f "$manifest_file" "$sums_file" "$bundle_file"
 
   docker image inspect aiautoclicker-backend:latest >/dev/null 2>&1 || return 24
   docker image inspect aiautoclicker-frontend:latest >/dev/null 2>&1 || return 24
