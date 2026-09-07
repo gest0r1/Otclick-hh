@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import asyncio
 from collections import Counter
+from datetime import UTC, datetime
 
 from fastapi import HTTPException
 
@@ -107,21 +108,40 @@ def _progress(batch: dict | None, jobs: list[dict]) -> dict:
     }
 
 
+def _parse_dt(value: object) -> datetime | None:
+    if not value:
+        return None
+    if isinstance(value, datetime):
+        dt = value
+    else:
+        try:
+            dt = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+        except ValueError:
+            return None
+    return dt if dt.tzinfo else dt.replace(tzinfo=UTC)
+
+
+def _lease_is_active(control: dict) -> bool:
+    if not control.get("lease_owner"):
+        return False
+    expires = _parse_dt(control.get("lease_expires_at"))
+    return bool(expires and expires > datetime.now(UTC))
+
+
 def _state(user_id: str) -> dict:
     control = _ensure_control(user_id)
     batch_id = str(control.get("active_batch_id") or "") or None
     batch = _batch(user_id, batch_id)
     jobs = _batch_jobs(user_id, batch_id)
     pending = _unbatched_queued(user_id)
-    # Lease owner is intentionally not exposed to the browser. The presence of
-    # a live lease is enough for progress/debug UI.
-    lease_active = bool(control.get("lease_owner") and control.get("lease_expires_at"))
+    # Lease owner is intentionally not exposed to the browser. Only a currently
+    # unexpired lease is reported as active; stale owner metadata is ignored.
     return {
         "desired_state": control.get("desired_state") or "paused",
         "safety_interval_seconds": int(control.get("safety_interval_seconds") or 0),
         "last_cycle_at": control.get("last_cycle_at"),
         "last_outcome": control.get("last_outcome"),
-        "lease_active": lease_active,
+        "lease_active": _lease_is_active(control),
         "runtime_wired": RUNTIME_WIRED,
         "waiting_for_next_batch": len(pending),
         "progress": _progress(batch, jobs),
