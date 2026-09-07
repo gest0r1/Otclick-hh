@@ -71,3 +71,37 @@ class VacancyEnrichmentResponse(BaseModel):
     vacancy: VacancyPipelineResponse
     already_responded: bool = False
     archived: bool = False
+
+
+class PipelineMaintenanceStatus(BaseModel):
+    stale_scores: int = 0
+    stale_covers_safe_to_regenerate: int = 0
+    score_limit: int
+    cover_limit: int
+    protected_states: list[str] = Field(default_factory=list)
+
+
+class ScoringRunSummary(BaseModel):
+    found: int = 0
+    scored: int = 0
+    hard_filtered: int = 0
+    archived: int = 0
+    errors: int = 0
+    skipped: int = 0
+
+
+class StaleRescoreResponse(BaseModel):
+    matched_stale: int
+    requeued: int
+    scoring: ScoringRunSummary
+
+
+class MaintenanceErrorItem(BaseModel):
+    pipeline_id: str
+    error: str
+
+
+class StaleCoverRegenerateResponse(BaseModel):
+    matched_stale: int
+    regenerated: int
+    errors: list[MaintenanceErrorItem] = Field(default_factory=list)
