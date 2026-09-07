@@ -25,6 +25,19 @@ def test_linux_artifact_uses_openchamber_style_upload_with_short_retention():
     assert "if-no-files-found: error" in workflow
 
 
+def test_linux_bundle_is_also_published_as_exact_sha_public_prerelease():
+    workflow = (ROOT / ".github/workflows/build-artifact.yml").read_text(encoding="utf-8")
+
+    assert "permissions:\n  contents: write" in workflow
+    assert 'tag="install-${GITHUB_SHA}"' in workflow
+    assert 'gh release create "$tag"' in workflow
+    assert "--prerelease" in workflow
+    assert "artifacts/otclick-images-linux-amd64.tar.zst" in workflow
+    assert "artifacts/manifest.json" in workflow
+    assert "artifacts/SHA256SUMS" in workflow
+    assert 'https://github.com/${GITHUB_REPOSITORY}/releases/tag/install-${GITHUB_SHA}' in workflow
+
+
 def test_linux_artifact_never_publishes_runtime_secrets():
     workflow = (ROOT / ".github/workflows/build-artifact.yml").read_text(encoding="utf-8")
 
