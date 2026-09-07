@@ -33,6 +33,7 @@ class VacancyPipelineResponse(BaseModel):
     user_decision_reason: str | None = None
     cover_letter_draft: str | None = None
     cover_letter_meta: dict[str, Any] = Field(default_factory=dict)
+    approved_letter_hash: str | None = None
     approved_at: str | None = None
     created_at: str
     updated_at: str
