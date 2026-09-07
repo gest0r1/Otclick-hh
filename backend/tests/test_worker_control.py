@@ -103,14 +103,19 @@ async def test_reconcile_drives_both_loops_gated_by_plan():
     registry.reconcile = AsyncMock()
 
     flags = {"a": (True, False), "b": (False, True)}
-    with patch.object(worker_main, "active_user_flags", return_value=flags), \
-         patch.object(worker_main, "filter_paid", side_effect=lambda u: u):
+    with (
+        patch.object(worker_main, "active_user_flags", return_value=flags),
+        patch.object(worker_main, "filter_paid", side_effect=lambda u: u),
+        patch.object(worker_main, "_run_discovery_if_due", new=AsyncMock()) as discovery,
+    ):
         await worker_main._reconcile(registry)
 
     calls = {c.args[0]: c.args[1:] for c in registry.reconcile.await_args_list}
-    assert calls["a"] == (True, False)   # newly desired apply-only
-    assert calls["b"] == (False, True)   # agent-only
-    assert calls["c"] == (False, False)  # live but no longer desired → stop both
+    assert calls["a"] == (False, False)  # discovery is separate; legacy apply never starts
+    assert calls["b"] == (False, True)   # recruiter agent only
+    assert calls["c"] == (False, False)  # no longer desired → stop runner
+    discovery.assert_any_await("a", True)
+    discovery.assert_any_await("b", False)
 
 
 @pytest.mark.asyncio
@@ -124,8 +129,12 @@ async def test_free_user_keeps_apply_loop_loses_agent():
     registry.reconcile = AsyncMock()
 
     flags = {"a": (True, True)}
-    with patch.object(worker_main, "active_user_flags", return_value=flags), \
-         patch.object(worker_main, "filter_paid", side_effect=lambda u: []):
+    with (
+        patch.object(worker_main, "active_user_flags", return_value=flags),
+        patch.object(worker_main, "filter_paid", side_effect=lambda u: []),
+        patch.object(worker_main, "_run_discovery_if_due", new=AsyncMock()) as discovery,
+    ):
         await worker_main._reconcile(registry)
 
-    registry.reconcile.assert_awaited_once_with("a", True, False)
+    registry.reconcile.assert_awaited_once_with("a", False, False)
+    discovery.assert_awaited_once_with("a", True)

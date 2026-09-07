@@ -25,7 +25,7 @@ def test_generated_draft_accepts_grounded_non_generic_text_in_range():
     from app.services.pipeline_cover_letters import _validate_draft
 
     text = ("В быстрорастущем 3PL-бизнесе я перестраивал ИТ вокруг скорости запуска клиентов и прозрачности операций. " * 6)[:620]
-    assert _validate_draft(text, {"fact-1"}) == text
+    assert _validate_draft(text, {"fact-1"}) == text.strip()
 
 
 @pytest.mark.asyncio

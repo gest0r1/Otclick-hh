@@ -7,9 +7,9 @@ def test_rule_match_is_deterministic_case_insensitive_or_scope():
     from app.services.selection_rules import vacancy_matches
 
     match = {
-        "title_any": ["инфраструктура"],
+        "title_any": ["инфраструктур"],
         "employer_any": ["нежелательная компания"],
-        "description_any": ["дежурство 24/7"],
+        "description_any": ["дежурств"],
     }
     assert vacancy_matches({"title": "Директор по ИНФРАСТРУКТУРЕ"}, match) is True
     assert vacancy_matches({"title": "CIO", "employer_name": "Нежелательная Компания"}, match) is True

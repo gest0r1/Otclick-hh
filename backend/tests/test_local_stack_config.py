@@ -107,19 +107,19 @@ def test_frontend_env_template_points_api_at_backend_not_kong():
     assert api_url != supabase_url
 
 
-def test_compose_api_url_default_points_at_backend():
+def test_compose_browser_api_default_uses_caddy_same_origin():
     compose = _read("docker-compose.yml")
 
     match = re.search(r"NEXT_PUBLIC_API_URL:\s*\$\{NEXT_PUBLIC_API_URL:-([^}]+)\}", compose)
     assert match, "compose must define a NEXT_PUBLIC_API_URL build arg with a default"
-    assert match.group(1).strip().endswith(f":{BACKEND_PORT}")
+    assert match.group(1).strip() == "http://localhost"
 
 
-def test_compose_publishes_both_ports():
+def test_compose_keeps_api_and_kong_diagnostics_on_loopback():
     compose = _read("docker-compose.yml")
 
-    assert f'"{KONG_PORT}:8000"' in compose, "Kong must be published on 54321"
-    assert f'"{BACKEND_PORT}:8000"' in compose, "backend must be published on 8000"
+    assert f'"127.0.0.1:{KONG_PORT}:8000"' in compose
+    assert f'"127.0.0.1:{BACKEND_PORT}:8000"' in compose
 
 
 # --- backend env template ----------------------------------------------------------
@@ -130,7 +130,7 @@ def test_backend_env_example_uses_in_network_supabase_url():
     text = _read(".env.example")
 
     assert _env_value(text, "SUPABASE_URL") == "http://kong:8000"
-    assert _env_value(text, "SUPABASE_PUBLIC_URL") == f"http://localhost:{KONG_PORT}"
+    assert _env_value(text, "SUPABASE_PUBLIC_URL") == "http://localhost"
 
 
 def test_no_cloud_supabase_leftovers_in_templates():
