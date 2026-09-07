@@ -17,6 +17,13 @@ type Preview = {
   unsupported_parameters: string[];
 };
 
+type SourceStats = {
+  new: number;
+  duplicate: number;
+  hard_filtered: number;
+  score_error: number;
+};
+
 type SearchSource = {
   id: string;
   resume_id: string | null;
@@ -24,6 +31,7 @@ type SearchSource = {
   source_type: "search_url" | "hh_autosearch" | "recommendations";
   raw_url: string | null;
   query_pairs: QueryPair[];
+  stats: SourceStats;
   enabled: boolean;
   last_checked_at: string | null;
   last_success_at: string | null;
@@ -258,6 +266,15 @@ export default function SearchSourcesPage() {
                     {checked && <Tag tone="neutral">проверка {checked}</Tag>}
                     {success && <Tag tone="ok">успех {success}</Tag>}
                     {source.last_error && <Tag tone="err">ошибка</Tag>}
+                  </div>
+
+                  <div className={styles.sourceMeta}>
+                    <Tag tone="ok">новых {source.stats?.new ?? 0}</Tag>
+                    <Tag tone="neutral">дубликатов {source.stats?.duplicate ?? 0}</Tag>
+                    <Tag tone="neutral">hard filter {source.stats?.hard_filtered ?? 0}</Tag>
+                    <Tag tone={(source.stats?.score_error ?? 0) > 0 ? "err" : "neutral"}>
+                      score errors {source.stats?.score_error ?? 0}
+                    </Tag>
                   </div>
 
                   {source.last_error && <div className={styles.error}>{source.last_error}</div>}
