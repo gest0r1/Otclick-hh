@@ -7,7 +7,8 @@ import type { ReactNode } from "react";
 const ITEMS = [
   { href: "/vacancies", label: "Вакансии", exact: true },
   { href: "/vacancies/sources", label: "Источники" },
-  { href: "/vacancies/rules", label: "Правила" },
+  { href: "/vacancies/rules", label: "Правила", exact: true },
+  { href: "/vacancies/rules/manage", label: "Управление" },
 ];
 
 export default function VacanciesLayout({ children }: { children: ReactNode }) {
