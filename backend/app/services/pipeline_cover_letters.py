@@ -9,7 +9,6 @@ from __future__ import annotations
 
 import asyncio
 import json
-import re
 from typing import Any
 
 from fastapi import HTTPException, status
@@ -158,7 +157,11 @@ async def generate_draft(user_id: str, pipeline_id: str) -> dict:
     resume = await load_resume(user_id, str(resume_row["id"]))
     resume_summary = _resume_summary(resume)
     context = await candidate_context_service.load_candidate_context(user_id)
-    allowed_keys = {str(f.get("fact_key")) for f in context.get("facts") or [] if f.get("fact_key")}
+    allowed_keys = {
+        str(f.get("fact_key"))
+        for f in context.get("facts") or []
+        if f.get("fact_key")
+    }
 
     llm = HHAgent(user_id).llm
     result = await _generate_with_llm(
@@ -177,9 +180,18 @@ async def generate_draft(user_id: str, pipeline_id: str) -> dict:
     except ValueError as ex:
         raise HTTPException(status_code=502, detail=str(ex)) from ex
 
+    meta = {
+        "fact_keys": selected_keys,
+        "language": result.language,
+        "model": settings.OPENAI_MODEL,
+        "profile_version": context.get("version"),
+        "resume_id": str(resume_row["id"]),
+        "edited_by_user": False,
+    }
     changes: dict[str, Any] = {
         "resume_id": str(resume_row["id"]),
         "cover_letter_draft": draft,
+        "cover_letter_meta": meta,
         # Any new draft is unapproved by definition. Approval/hash is a later
         # explicit user action and must never survive regeneration.
         "approved_letter_hash": None,
@@ -208,14 +220,7 @@ async def generate_draft(user_id: str, pipeline_id: str) -> dict:
         if not (res and res.data):
             raise HTTPException(status_code=409, detail="vacancy changed concurrently")
 
-    row = await vacancy_review_service.get_vacancy(user_id, pipeline_id)
-    row["cover_letter_meta"] = {
-        "fact_keys": selected_keys,
-        "language": result.language,
-        "model": settings.OPENAI_MODEL,
-        "profile_version": context.get("version"),
-    }
-    return row
+    return await vacancy_review_service.get_vacancy(user_id, pipeline_id)
 
 
 async def save_draft(user_id: str, pipeline_id: str, text: str) -> dict:
@@ -231,11 +236,14 @@ async def save_draft(user_id: str, pipeline_id: str, text: str) -> dict:
     if len(clean) > 4000:
         raise HTTPException(status_code=400, detail="cover letter draft is too long")
 
+    meta = dict(vacancy.get("cover_letter_meta") or {})
+    meta["edited_by_user"] = True
     res = (
         service_client.table("vacancy_pipeline")
         .update(
             {
                 "cover_letter_draft": clean,
+                "cover_letter_meta": meta,
                 "approved_letter_hash": None,
                 "approved_at": None,
                 "updated_at": vacancy_pipeline._now(),
