@@ -272,6 +272,18 @@ find_existing_user_id() {
   python3 -c 'import json,sys; rows=json.load(sys.stdin); print(rows[0]["id"] if len(rows)==1 else ("__MULTIPLE__" if len(rows)>1 else ""))' <<<"$response"
 }
 
+sync_admin_email() {
+  local user_id="$1" service_key response email
+  service_key="$(env_get SERVICE_ROLE_KEY)"
+  [[ -n "$service_key" ]] || die "SERVICE_ROLE_KEY is empty"
+  response="$(curl -fsS \
+    -H "apikey: $service_key" \
+    -H "Authorization: Bearer $service_key" \
+    "http://127.0.0.1:54321/auth/v1/admin/users/$user_id")"
+  email="$(python3 -c 'import json,sys; print(json.load(sys.stdin).get("email", ""))' <<<"$response")"
+  [[ -n "$email" ]] && env_set OTCLICK_ADMIN_EMAIL "$email"
+}
+
 create_first_user() {
   local email password service_key payload response user_id
   email="${OTCLICK_ADMIN_EMAIL:-$(env_get OTCLICK_ADMIN_EMAIL)}"
@@ -303,7 +315,10 @@ PY
 
 ensure_single_user() {
   local user_id existing
-  user_id="$(env_get OTCLICK_USER_ID)"
+  user_id="${OTCLICK_USER_ID:-$(env_get OTCLICK_USER_ID)}"
+  if [[ -n "${OTCLICK_USER_ID:-}" ]]; then
+    env_set OTCLICK_USER_ID "$user_id"
+  fi
   if [[ -z "$user_id" ]]; then
     existing="$(find_existing_user_id)"
     if [[ "$existing" == "__MULTIPLE__" ]]; then
@@ -320,6 +335,7 @@ ensure_single_user() {
     log "using configured single user: $user_id"
   fi
 
+  sync_admin_email "$user_id"
   log "loading curated candidate profile/facts"
   docker compose exec -T api python scripts/load_candidate_data.py --user-id "$user_id"
 }
