@@ -5,6 +5,7 @@ import asyncio
 from fastapi import APIRouter, Depends, HTTPException, Query
 
 from app.api.deps import get_current_user
+from app.schemas.calibration import CalibrationReport
 from app.schemas.vacancies import (
     CoverLetterDraftUpdate,
     PipelineMaintenanceStatus,
@@ -15,6 +16,7 @@ from app.schemas.vacancies import (
     VacancyPipelineResponse,
 )
 from app.services import (
+    calibration_report,
     pipeline_cover_letters,
     pipeline_maintenance,
     send_queue_service,
@@ -45,6 +47,11 @@ async def list_all(
 @router.get("/maintenance", response_model=PipelineMaintenanceStatus)
 async def maintenance_status(user_id: str = Depends(get_current_user)):
     return PipelineMaintenanceStatus(**(await pipeline_maintenance.get_status(user_id)))
+
+
+@router.get("/calibration", response_model=CalibrationReport)
+async def calibration(user_id: str = Depends(get_current_user)):
+    return CalibrationReport(**(await calibration_report.build_report(user_id)))
 
 
 async def _run_maintenance_locked(user_id: str, action):
