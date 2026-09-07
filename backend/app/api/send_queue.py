@@ -4,11 +4,13 @@ from fastapi import APIRouter, Depends, Query
 
 from app.api.deps import get_current_user
 from app.schemas.send_queue import (
+    BulkQueueRequest,
+    BulkQueueResponse,
     SendQueueItem,
     SendRuntimeControlRequest,
     SendRuntimeState,
 )
-from app.services import send_queue_service, send_runtime_control
+from app.services import bulk_send_queue, send_queue_service, send_runtime_control
 
 
 router = APIRouter(prefix="/api/send-queue", tags=["send-queue"])
@@ -41,6 +43,14 @@ async def list_all(
 ):
     rows = await send_queue_service.list_queue(user_id, statuses=status, limit=limit)
     return [SendQueueItem(**row) for row in rows]
+
+
+@router.post("/bulk", response_model=BulkQueueResponse)
+async def queue_bulk(
+    body: BulkQueueRequest,
+    user_id: str = Depends(get_current_user),
+):
+    return BulkQueueResponse(**(await bulk_send_queue.queue_many(user_id, body.pipeline_ids)))
 
 
 @router.post("/{pipeline_id}/reset", response_model=SendQueueItem)
