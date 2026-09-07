@@ -11,7 +11,7 @@ from app.db.supabase import service_client
 from app.services.search_sources import InvalidHHSearchURL, parse_hh_search_url
 
 _SOURCE_COLUMNS = (
-    "id,user_id,resume_id,name,source_type,raw_url,query_pairs,cursor,enabled,"
+    "id,user_id,resume_id,name,source_type,raw_url,query_pairs,cursor,stats,enabled,"
     "last_checked_at,last_success_at,last_error,created_at,updated_at"
 )
 
@@ -39,6 +39,41 @@ def _parse_or_400(url: str):
         raise HTTPException(status_code=400, detail=str(ex)) from ex
 
 
+def _outcome_counts(source_id: str) -> dict[str, int]:
+    links = (
+        service_client.table("vacancy_pipeline_sources")
+        .select("vacancy_id")
+        .eq("source_id", source_id)
+        .execute()
+    )
+    vacancy_ids = [str(row["vacancy_id"]) for row in (links.data or []) if row.get("vacancy_id")]
+    if not vacancy_ids:
+        return {"hard_filtered": 0, "score_error": 0}
+    rows = (
+        service_client.table("vacancy_pipeline")
+        .select("id,status,hard_filter_reason")
+        .in_("id", vacancy_ids)
+        .execute()
+    )
+    data = rows.data or []
+    return {
+        "hard_filtered": sum(1 for row in data if row.get("hard_filter_reason")),
+        "score_error": sum(1 for row in data if row.get("status") == "score_error"),
+    }
+
+
+def _with_outcome_stats(source: dict) -> dict:
+    row = dict(source)
+    stored = row.get("stats") or {}
+    outcomes = _outcome_counts(str(row["id"]))
+    row["stats"] = {
+        "new": int(stored.get("new") or 0),
+        "duplicate": int(stored.get("duplicate") or 0),
+        **outcomes,
+    }
+    return row
+
+
 async def preview_url(url: str) -> dict:
     parsed = _parse_or_400(url)
     return {
@@ -62,7 +97,9 @@ async def list_sources(user_id: str) -> list[dict]:
         )
 
     res = await asyncio.to_thread(_query)
-    return res.data or []
+    return await asyncio.gather(
+        *(asyncio.to_thread(_with_outcome_stats, row) for row in (res.data or []))
+    )
 
 
 async def get_source(user_id: str, source_id: str) -> dict:
@@ -79,7 +116,7 @@ async def get_source(user_id: str, source_id: str) -> dict:
     res = await asyncio.to_thread(_query)
     if not (res and res.data):
         raise HTTPException(status_code=404, detail="search source not found")
-    return res.data
+    return await asyncio.to_thread(_with_outcome_stats, res.data)
 
 
 async def create_source(user_id: str, payload: dict) -> dict:
@@ -150,7 +187,7 @@ async def update_source(user_id: str, source_id: str, payload: dict) -> dict:
     res = await asyncio.to_thread(_update)
     if not res.data:
         raise HTTPException(status_code=404, detail="search source not found")
-    return res.data[0]
+    return await asyncio.to_thread(_with_outcome_stats, res.data[0])
 
 
 async def delete_source(user_id: str, source_id: str) -> None:
