@@ -12,9 +12,10 @@ from collections import defaultdict
 
 from fastapi import HTTPException, status
 
+from app.config import settings
 from app.db.supabase import service_client
 from app.hh import vacancy_page, web
-from app.services import vacancy_pipeline
+from app.services import candidate_context_service, context_fingerprints, vacancy_pipeline
 
 
 _VACANCY_COLUMNS = (
@@ -98,12 +99,102 @@ def _attach_sources(user_id: str, rows: list[dict]) -> list[dict]:
     return [{**row, "sources": sources.get(str(row["id"]), [])} for row in rows]
 
 
+def _active_rules_for_stale(user_id: str) -> list[dict]:
+    res = (
+        service_client.table("vacancy_selection_rules")
+        .select("id,version,name,action,match,instruction,active")
+        .eq("user_id", user_id)
+        .eq("active", True)
+        .order("version")
+        .execute()
+    )
+    return res.data or []
+
+
+def _resume_map(user_id: str, rows: list[dict]) -> dict[str, dict]:
+    resume_ids = list(
+        dict.fromkeys(str(row["resume_id"]) for row in rows if row.get("resume_id"))
+    )
+    if not resume_ids:
+        return {}
+    res = (
+        service_client.table("resumes")
+        .select("id,hh_resume_id,title,synced_at")
+        .eq("user_id", user_id)
+        .in_("id", resume_ids)
+        .execute()
+    )
+    return {str(row["id"]): row for row in (res.data or [])}
+
+
+def _stale_flags(
+    row: dict,
+    *,
+    context: dict,
+    rules: list[dict],
+    resumes: dict[str, dict],
+) -> dict:
+    score_stale: bool | None = False
+    cover_stale: bool | None = False
+
+    score_details = row.get("score_details") or {}
+    if row.get("score") is not None or row.get("status") in {"scored", "review"}:
+        stored = score_details.get("context_hash")
+        if not stored:
+            score_stale = True
+        else:
+            current = context_fingerprints.score_context(
+                context=context,
+                rules=rules,
+                vacancy=row,
+                model=settings.OPENAI_MODEL,
+            )["context_hash"]
+            score_stale = str(stored) != current
+
+    if row.get("cover_letter_draft"):
+        meta = row.get("cover_letter_meta") or {}
+        stored = meta.get("context_hash")
+        resume = resumes.get(str(row.get("resume_id") or ""))
+        if not stored or not resume:
+            cover_stale = True
+        else:
+            current = context_fingerprints.cover_context(
+                context=context,
+                vacancy=row,
+                resume_row=resume,
+                model=settings.OPENAI_MODEL,
+            )["context_hash"]
+            cover_stale = str(stored) != current
+
+    return {**row, "score_stale": score_stale, "cover_stale": cover_stale}
+
+
+async def _attach_stale_state(user_id: str, rows: list[dict]) -> list[dict]:
+    if not rows:
+        return rows
+    # Stale state is advisory. A missing candidate context must not make the
+    # vacancy backlog unavailable; report unknown instead of pretending fresh.
+    try:
+        context, rules, resumes = await asyncio.gather(
+            candidate_context_service.load_candidate_context(user_id),
+            asyncio.to_thread(_active_rules_for_stale, user_id),
+            asyncio.to_thread(_resume_map, user_id, rows),
+        )
+    except Exception:
+        return [{**row, "score_stale": None, "cover_stale": None} for row in rows]
+    return [
+        _stale_flags(row, context=context, rules=rules, resumes=resumes)
+        for row in rows
+    ]
+
+
 async def list_vacancies(
     user_id: str,
     *,
     statuses: list[str] | None = None,
     limit: int = 100,
     offset: int = 0,
+    include_stale: bool = True,
 ) -> list[dict]:
     unknown = [s for s in (statuses or []) if s not in vacancy_pipeline.PIPELINE_STATUSES]
     if unknown:
@@ -123,13 +214,16 @@ async def list_vacancies(
         return q.order("discovered_at", desc=True).range(offset, offset + limit - 1).execute()
 
     res = await asyncio.to_thread(_query)
-    rows = res.data or []
-    return await asyncio.to_thread(_attach_sources, user_id, rows)
+    rows = await asyncio.to_thread(_attach_sources, user_id, res.data or [])
+    return await _attach_stale_state(user_id, rows) if include_stale else rows
 
 
-async def get_vacancy(user_id: str, pipeline_id: str) -> dict:
+async def get_vacancy(user_id: str, pipeline_id: str, *, include_stale: bool = True) -> dict:
     row = await asyncio.to_thread(_get_owned, user_id, pipeline_id)
-    return (await asyncio.to_thread(_attach_sources, user_id, [row]))[0]
+    rows = await asyncio.to_thread(_attach_sources, user_id, [row])
+    if include_stale:
+        rows = await _attach_stale_state(user_id, rows)
+    return rows[0]
 
 
 async def decide(
@@ -194,7 +288,7 @@ async def enrich(user_id: str, pipeline_id: str) -> tuple[dict, dict]:
                 from_statuses=[current["status"]],
                 to_status="archived",
             )
-        row = await get_vacancy(user_id, pipeline_id)
+        row = await get_vacancy(user_id, pipeline_id, include_stale=False)
         return row, {"archived": True, "already_responded": False}
 
     if full.get("archived") and current["status"] != "sent":
@@ -220,7 +314,7 @@ async def enrich(user_id: str, pipeline_id: str) -> tuple[dict, dict]:
         vacancy=full,
         source_id=None,
     )
-    row = await get_vacancy(user_id, pipeline_id)
+    row = await get_vacancy(user_id, pipeline_id, include_stale=False)
     return row, {
         "archived": bool(full.get("archived")),
         "already_responded": bool(full.get("already_responded")),
