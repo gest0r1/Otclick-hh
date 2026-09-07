@@ -1,7 +1,5 @@
 import { createClient } from "@/lib/supabase/client";
 
-const API_URL = process.env.NEXT_PUBLIC_API_URL!;
-
 export class ApiError extends Error {
   status: number;
   constructor(message: string, status: number) {
@@ -24,7 +22,9 @@ export async function apiFetch<T = unknown>(
   headers.set("Content-Type", "application/json");
   if (token) headers.set("Authorization", `Bearer ${token}`);
 
-  const res = await fetch(`${API_URL}${path}`, { ...init, headers });
+  // Caddy exposes frontend and FastAPI on one origin, so the browser image does
+  // not need an installation-specific NEXT_PUBLIC_API_URL baked at build time.
+  const res = await fetch(path, { ...init, headers });
   const text = await res.text();
   const data = text ? JSON.parse(text) : null;
 
