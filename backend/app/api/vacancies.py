@@ -4,11 +4,12 @@ from fastapi import APIRouter, Depends, Query
 
 from app.api.deps import get_current_user
 from app.schemas.vacancies import (
+    CoverLetterDraftUpdate,
     VacancyDecisionRequest,
     VacancyEnrichmentResponse,
     VacancyPipelineResponse,
 )
-from app.services import vacancy_review_service
+from app.services import pipeline_cover_letters, vacancy_review_service
 
 
 router = APIRouter(prefix="/api/vacancies", tags=["vacancies"])
@@ -65,3 +66,22 @@ async def enrich(
         already_responded=state["already_responded"],
         archived=state["archived"],
     )
+
+
+@router.post("/{pipeline_id}/cover-letter/generate", response_model=VacancyPipelineResponse)
+async def generate_cover_letter(
+    pipeline_id: str,
+    user_id: str = Depends(get_current_user),
+):
+    row = await pipeline_cover_letters.generate_draft(user_id, pipeline_id)
+    return VacancyPipelineResponse(**row)
+
+
+@router.put("/{pipeline_id}/cover-letter", response_model=VacancyPipelineResponse)
+async def update_cover_letter(
+    pipeline_id: str,
+    body: CoverLetterDraftUpdate,
+    user_id: str = Depends(get_current_user),
+):
+    row = await pipeline_cover_letters.save_draft(user_id, pipeline_id, body.text)
+    return VacancyPipelineResponse(**row)
