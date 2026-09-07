@@ -13,7 +13,7 @@ from collections import defaultdict
 from fastapi import HTTPException, status
 
 from app.db.supabase import service_client
-from app.hh import web
+from app.hh import vacancy_page, web
 from app.services import vacancy_pipeline
 
 
@@ -71,7 +71,9 @@ def _source_map(user_id: str, vacancy_ids: list[str]) -> dict[str, list[dict]]:
         .execute()
     )
     links = links_res.data or []
-    source_ids = list(dict.fromkeys(str(row["source_id"]) for row in links if row.get("source_id")))
+    source_ids = list(
+        dict.fromkeys(str(row["source_id"]) for row in links if row.get("source_id"))
+    )
     if not source_ids:
         return {}
 
@@ -182,7 +184,7 @@ async def enrich(user_id: str, pipeline_id: str) -> tuple[dict, dict]:
     """
     current = await asyncio.to_thread(_get_owned, user_id, pipeline_id)
     try:
-        full = await web.get_vacancy(user_id, current["hh_vacancy_id"])
+        full = await vacancy_page.get_full_vacancy(user_id, current["hh_vacancy_id"])
     except web.VacancyGone:
         if current["status"] != "sent":
             await asyncio.to_thread(
@@ -195,15 +197,14 @@ async def enrich(user_id: str, pipeline_id: str) -> tuple[dict, dict]:
         row = await get_vacancy(user_id, pipeline_id)
         return row, {"archived": True, "already_responded": False}
 
-    if full.get("archived"):
-        if current["status"] != "sent":
-            await asyncio.to_thread(
-                vacancy_pipeline.transition,
-                user_id=user_id,
-                pipeline_id=pipeline_id,
-                from_statuses=[current["status"]],
-                to_status="archived",
-            )
+    if full.get("archived") and current["status"] != "sent":
+        await asyncio.to_thread(
+            vacancy_pipeline.transition,
+            user_id=user_id,
+            pipeline_id=pipeline_id,
+            from_statuses=[current["status"]],
+            to_status="archived",
+        )
 
     description = str(full.get("description") or "").strip()
     if not description:
