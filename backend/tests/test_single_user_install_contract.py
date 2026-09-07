@@ -17,6 +17,16 @@ def test_env_defaults_keep_signup_and_real_apply_closed():
     assert "CADDY_SITE_ADDRESS=:80" in env
 
 
+def test_env_supports_generic_openai_compatible_provider():
+    env = _read(".env.example")
+
+    assert "OPENAI_BASE_URL=" in env
+    assert "OPENAI_MODEL=" in env
+    assert "OPENAI_STRUCTURED_OUTPUT_METHOD=function_calling" in env
+    assert "https://opencode.ai/zen/go/v1" in env
+    assert "longcat-2.0" in env
+
+
 def test_compose_exposes_only_caddy_publicly():
     compose = _read("docker-compose.yml")
 
@@ -74,3 +84,46 @@ def test_installer_never_enables_real_apply():
 
     assert "ALLOW_REAL_APPLY=true" not in installer
     assert "Real HH submit: DISABLED by default" in installer
+
+
+def test_fresh_installer_prompts_through_tty_and_configures_llm():
+    installer = _read("install.sh")
+
+    # /dev/tty keeps prompts usable when the script itself was downloaded by curl.
+    assert "</dev/tty" in installer
+    assert "OpenCode Go + LongCat 2.0" in installer
+    assert "https://opencode.ai/zen/go/v1" in installer
+    assert 'model="longcat-2.0"' in installer
+    assert "Custom OpenAI-compatible endpoint" in installer
+    assert "API key выбранного LLM provider" in installer
+    assert "infra/verify_llm.py --env .env" in installer
+    assert "OPENAI_STRUCTURED_OUTPUT_METHOD function_calling" in installer
+
+
+def test_installer_prompts_for_app_identity_and_public_url():
+    installer = _read("install.sh")
+
+    assert "URL приложения (https://domain или LAN http://IP)" in installer
+    assert "Email для входа в Otclick" in installer
+    assert "Пароль Otclick (Enter = сгенерировать безопасный)" in installer
+    assert "Повтори пароль Otclick" in installer
+
+
+def test_installer_prints_candidate_completion_files_and_reload_command():
+    installer = _read("install.sh")
+
+    assert "backend/data/candidate/candidate_profile.json" in installer
+    assert "backend/data/candidate/confirmed_facts.json" in installer
+    assert "Candidate profile:" in installer
+    assert "no mandatory manual completion" in installer
+    assert "ACTION REQUIRED" in installer
+    assert "docker compose exec -T api python scripts/load_candidate_data.py --user-id" in installer
+
+
+def test_llm_verifier_requires_function_calling():
+    verifier = _read("infra/verify_llm.py")
+
+    assert '"tools"' in verifier
+    assert '"tool_choice"' in verifier
+    assert '"emit_check"' in verifier
+    assert 'base + "/chat/completions"' in verifier
