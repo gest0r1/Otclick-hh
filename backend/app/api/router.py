@@ -6,6 +6,7 @@ from app.api import (
     auth,
     billing,
     blacklist,
+    candidate_context,
     captcha,
     chats,
     extension,
@@ -28,6 +29,7 @@ api_router = APIRouter()
 api_router.include_router(auth.router)
 api_router.include_router(resumes.router)
 api_router.include_router(filters.router)
+api_router.include_router(candidate_context.router)
 api_router.include_router(search_sources.router)
 api_router.include_router(vacancies.router)
 api_router.include_router(selection_rules.router)
