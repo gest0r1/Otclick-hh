@@ -15,6 +15,7 @@
 - [x] `2e081036` — уточнён план реализации и стратегия источников.
 - [x] `96efa7b9` — Search Source API + incremental discovery + разрыв discovery/legacy apply runner.
 - [x] `b9b380a6` — curated candidate profile + 22 confirmed facts + claim guardrails + loader.
+- [x] `c11bf100..9c3bda67` — backend `Vacancies` backlog/review API + full HH vacancy web-session enrichment + review/parser tests.
 - [ ] CI baseline: draft PR создан, но GitHub Actions пока не создаёт workflow run (`check_runs=0`); это нужно отдельно восстановить/проверить.
 
 > После каждого законченного блока отмечать `[x]` и добавлять commit SHA. Не считать задачу завершённой только потому, что схема или helper уже существуют: acceptance отмечается после подключения runtime/UI и тестов.
@@ -78,8 +79,11 @@
 - [x] Conditional/atomic lifecycle transition helper.
 - [x] Новый runtime discovery пишет напрямую в `vacancy_pipeline`, не создавая `ApplyJob`.
 - [x] `worker_main` использует discovery path; legacy apply runner не является потребителем найденных вакансий.
+- [x] Read-only full vacancy enrichment через web-session/cookies сохраняет `description` в pipeline.
+- [x] Backend API чтения backlog и одной вакансии с источниками.
+- [x] Backend review actions: выбрать / отклонить с причиной / отложить / вернуть в review.
+- [ ] Подключить enrichment автоматически непосредственно перед hard filter/scoring.
 - [ ] Удалить/заархивировать старый `vacancy_producer.py` и in-memory queue после переноса оставшихся зависимостей.
-- [ ] При scoring догружать full vacancy description и сохранять его в pipeline.
 - [ ] Restart/recovery integration tests с реальной БД.
 
 **Acceptance:** источник истины по найденным вакансиям — PostgreSQL; перезапуск не теряет backlog.
@@ -112,14 +116,26 @@
 - [x] Discovery cadence — 5 минут; 15-секундный reconcile не вызывает новый HH search каждый раз.
 - [ ] Расширить source statistics: new / duplicate / hard-filtered / score-error, а не только текущий run summary.
 
-## 3.3 Нативные автопоиски HH
+## 3.3 Нативные автопоиски HH через web-session
 
-Предпочтительный UX импорта, но не runtime dependency.
+Предпочтительный UX импорта, но не runtime dependency и **без Bearer token**.
 
-- [ ] Исследовать authenticated HH page/internal flow списка автопоисков.
-- [ ] Если стабилен — импортировать criteria как `source_type=hh_autosearch`.
-- [ ] После импорта выполнять ingestion собственным Search Source + cursor.
-- [ ] Если HH flow изменился — manual URL остаётся рабочим; MVP не блокируется.
+Подтверждено на свежем live-contract HH июля 2026:
+- авторизованный applicant web-session открывает `GET /applicant/autosearch.xml`;
+- это отдельный web-контур «Автопоиски вакансий»;
+- на проверенном аккаунте список был пуст, поэтому контракт заполненной карточки ещё нужно снять на живом аккаунте пользователя.
+
+- [x] Подтверждён web-route `/applicant/autosearch.xml` через applicant cookies.
+- [x] Решение: не строить импорт на `api.hh.ru/saved_searches/vacancies` и не требовать applicant Bearer token.
+- [ ] Read-only probe заполненной страницы: DOM/data-qa + inline JSON state + наблюдаемые internal XHR/fetch без POST/PUT/DELETE.
+- [ ] На живом аккаунте подтвердить минимум: `name + search URL/query`, желательно стабильный HH autosearch id и `new_count`.
+- [ ] Если данные есть в inline state — использовать его как primary parser; DOM/search links как fallback.
+- [ ] Если страница client-side — снять фактический внутренний read-only XHR и использовать его через ту же web-session.
+- [ ] Импортировать criteria как `source_type=hh_autosearch`; хранить origin/external id/metadata отдельно от runtime cursor.
+- [ ] Повторный импорт: изменённые criteria сбрасывают cursor; неизменённые сохраняют его.
+- [ ] Sync не удаляет локальный source автоматически, если автопоиск исчез в HH — помечает origin missing и оставляет решение пользователю.
+- [ ] После импорта выполнять ingestion собственным Search Source + cursor; HH `new_count` только справочный.
+- [ ] Manual Search URL остаётся гарантированным fallback и не блокирует MVP.
 
 ## 3.4 HH recommendations
 
@@ -151,12 +167,17 @@
 
 # Этап 5. Vacancies / mobile review
 
+- [x] Backend `/api/vacancies`: list/get + lifecycle filter/pagination.
+- [x] Backend source attribution в выдаче backlog.
+- [x] Backend действия: Выбрать / Отклонить / Отложить / Вернуть в review.
+- [x] Отклонение требует `user_decision_reason`; terminal/send states обычным review action не двигаются.
+- [x] Read-only `/api/vacancies/{id}/enrich` догружает full description через HH web-session.
 - [ ] Отдельная страница `Vacancies`, не `Applications`.
 - [ ] Desktop table + mobile cards.
 - [ ] Company / role / salary / score / sources / status.
 - [ ] Full description + score explanation.
-- [ ] Выбрать / Отклонить / Отложить.
-- [ ] Rejection reason.
+- [ ] UI: Выбрать / Отклонить / Отложить.
+- [ ] UI rejection reason.
 - [ ] Bulk select.
 - [ ] Lifecycle filters.
 
@@ -258,10 +279,11 @@ curl -fsSL https://raw.githubusercontent.com/gest0r1/Otclick-hh/main/install.sh 
 
 ## Следующий порядок работ
 
-1. Восстановить/запустить CI PR checks и устранить найденные ошибки.
-2. API чтения `vacancy_pipeline` + full vacancy enrichment.
-3. Hard filter + structured LLM scorer на prepared candidate profile.
-4. Mobile `Vacancies` review.
-5. Cover writer/draft/approval.
-6. Persistent send queue.
-7. Rules learning / cache versioning / installer / calibration.
+1. Подключить full vacancy enrichment автоматически перед hard filter/scoring.
+2. Реализовать Hard filter + structured LLM scorer на prepared candidate profile.
+3. Mobile `Vacancies` review.
+4. Cover writer/draft/approval.
+5. Persistent send queue.
+6. Rules learning / cache versioning / installer / calibration.
+7. Отдельно восстановить CI PR checks; отсутствие CI не блокирует проектирование, но блокирует утверждение production-ready состояния.
+8. Через 3–4 цикла разработки проверить web-session автопоиски на живом аккаунте и зафиксировать заполненный контракт.
