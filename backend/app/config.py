@@ -61,10 +61,17 @@ class Settings(BaseSettings):
     FREE_TOTAL_APPLIES: int = 30      # lifetime, not per day
     PAID_DAILY_APPLIES: int = 100
 
+    # Generic OpenAI-compatible chat endpoint. The endpoint may be OpenAI itself,
+    # OpenCode Go, LongCat direct, or another provider implementing the protocol.
     OPENAI_API_KEY: str = ""
     OPENAI_BASE_URL: str = "https://api.openai.com/v1"
     OPENAI_MODEL: str = "gpt-5.4-nano"
     OPENAI_RATE_LIMIT: int = 60
+    # function_calling is the portable default. json_schema can be selected for
+    # providers that explicitly support OpenAI Structured Outputs.
+    OPENAI_STRUCTURED_OUTPUT_METHOD: Literal[
+        "function_calling", "json_mode", "json_schema"
+    ] = "function_calling"
 
     # Positioning tactics baked into AI-generated candidate-facing text. See
     # docs/spec-ai-positioning.md. "full" opts into the guide's more
