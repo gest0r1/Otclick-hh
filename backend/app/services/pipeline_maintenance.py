@@ -10,8 +10,16 @@ from __future__ import annotations
 
 import asyncio
 
+from app.ai.agent import HHAgent
 from app.db.supabase import service_client
-from app.services import pipeline_cover_letters, pipeline_scoring, vacancy_pipeline, vacancy_review_service
+from app.services import (
+    candidate_context_service,
+    pipeline_cover_letters,
+    pipeline_scoring,
+    selection_rules,
+    vacancy_pipeline,
+    vacancy_review_service,
+)
 
 
 SAFE_SCORE_STATUSES = ("scored", "review", "score_error")
@@ -92,24 +100,64 @@ async def get_status(user_id: str) -> dict:
 
 async def rescore_stale(user_id: str) -> dict:
     rows = await _stale_score_rows(user_id)
-    requeued = 0
+    if not rows:
+        return {
+            "matched_stale": 0,
+            "requeued": 0,
+            "scoring": {
+                "found": 0,
+                "scored": 0,
+                "hard_filtered": 0,
+                "archived": 0,
+                "errors": 0,
+                "skipped": 0,
+            },
+        }
+
+    # Load all scoring dependencies before mutating lifecycle. If context/model
+    # setup is unavailable, stale rows remain untouched instead of being left in
+    # a half-maintained state.
+    context, rules = await asyncio.gather(
+        candidate_context_service.load_candidate_context(user_id),
+        selection_rules.load_active_rules(user_id),
+    )
+    llm = HHAgent(user_id).llm
+
+    requeued_rows: list[dict] = []
     for row in rows:
         if await asyncio.to_thread(_requeue_score, user_id, row):
-            requeued += 1
+            requeued_rows.append({**row, "status": "discovered"})
 
-    # Run only the rows explicitly requeued by this action. score_user claims
-    # discovered rows atomically, so a concurrent worker cannot double-score.
-    scoring = await pipeline_scoring.score_user(user_id, limit=max(requeued, 1)) if requeued else {
-        "found": 0,
+    scoring = {
+        "found": len(requeued_rows),
         "scored": 0,
         "hard_filtered": 0,
         "archived": 0,
         "errors": 0,
         "skipped": 0,
     }
+    for row in requeued_rows:
+        outcome = await pipeline_scoring.score_one(
+            user_id,
+            row,
+            context=context,
+            llm=llm,
+            rules=rules,
+        )
+        if outcome == "scored":
+            scoring["scored"] += 1
+        elif outcome == "hard_filtered":
+            scoring["hard_filtered"] += 1
+        elif outcome == "archived":
+            scoring["archived"] += 1
+        elif outcome == "error":
+            scoring["errors"] += 1
+        else:
+            scoring["skipped"] += 1
+
     return {
         "matched_stale": len(rows),
-        "requeued": requeued,
+        "requeued": len(requeued_rows),
         "scoring": scoring,
     }
 
