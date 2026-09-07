@@ -11,7 +11,7 @@ import { IconBtn, LinkBtn } from "@/components/otclick/ui";
 import { useQuery } from "@tanstack/react-query";
 import {
   IHome, IList, IMail, IDoc, IUser, ISettings, ILogo, ILogout,
-  ITelegram, IBolt, IChevRight, IChart,
+  ITelegram, IBolt, IChevRight, IChart, ISearch,
 } from "@/components/otclick/icons";
 
 const STORAGE_KEY = "oc-sidebar-collapsed";
@@ -22,16 +22,17 @@ type Item = {
   icon: React.ReactNode;
   label: string;
   badge?: "chats" | "todo" | "notifications";
+  mobile?: boolean;
 };
 
 const NAV: Item[] = [
-  { id: "dashboard", href: "/dashboard", icon: <IHome />, label: "Главная" },
-  { id: "vacancies", href: "/vacancies", icon: <IList />, label: "Вакансии" },
-  { id: "applications", href: "/applications", icon: <IList />, label: "Отклики" },
+  { id: "dashboard", href: "/dashboard", icon: <IHome />, label: "Главная", mobile: true },
+  { id: "vacancies", href: "/vacancies", icon: <ISearch />, label: "Вакансии", mobile: true },
+  { id: "applications", href: "/applications", icon: <IList />, label: "Отклики", mobile: true },
   { id: "analytics", href: "/analytics", icon: <IChart />, label: "Аналитика" },
-  { id: "chats", href: "/chats", icon: <IMail />, label: "Чаты", badge: "chats" },
+  { id: "chats", href: "/chats", icon: <IMail />, label: "Чаты", badge: "chats", mobile: true },
   { id: "todo", href: "/todo", icon: <IDoc />, label: "Задания", badge: "todo" },
-  { id: "account", href: "/account", icon: <IUser />, label: "Аккаунт" },
+  { id: "account", href: "/account", icon: <IUser />, label: "Аккаунт", mobile: true },
 ];
 
 export default function Sidebar({ email }: { email: string | null }) {
@@ -133,7 +134,7 @@ export default function Sidebar({ email }: { email: string | null }) {
             <Link
               key={it.id}
               href={it.href}
-              className="oc-nav-item"
+              className={`oc-nav-item${it.mobile ? "" : " oc-nav-item--desktop-secondary"}`}
               aria-current={active ? "page" : undefined}
               title={collapsed ? it.label : undefined}
             >
