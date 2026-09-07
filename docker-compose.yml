@@ -219,17 +219,15 @@ services:
     build:
       context: ./frontend
       dockerfile: Dockerfile
-      args:
-        NEXT_PUBLIC_SUPABASE_URL: ${NEXT_PUBLIC_SUPABASE_URL}
-        NEXT_PUBLIC_SUPABASE_ANON_KEY: ${NEXT_PUBLIC_SUPABASE_ANON_KEY}
-        NEXT_PUBLIC_API_URL: ${NEXT_PUBLIC_API_URL:-http://localhost}
-        NEXT_PUBLIC_GOOGLE_AUTH_ENABLED: ${NEXT_PUBLIC_GOOGLE_AUTH_ENABLED:-false}
     image: aiautoclicker-frontend:latest
     container_name: aiautoclicker-frontend
     restart: unless-stopped
     environment:
-      # Server-side Supabase calls stay on the Docker network.
+      # Server-side calls use private Kong. The browser gets the public anon key
+      # from a first-party runtime cookie and uses the Caddy same-origin URL.
       SUPABASE_URL: http://kong:8000
+      SUPABASE_ANON_KEY: ${ANON_KEY}
+      GOOGLE_AUTH_ENABLED: ${NEXT_PUBLIC_GOOGLE_AUTH_ENABLED:-false}
     ports:
       - "127.0.0.1:3000:3000"
     depends_on:
