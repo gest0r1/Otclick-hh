@@ -4,6 +4,7 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import { apiFetch } from "@/lib/api";
 import { Btn, Card, EmptyState, Skeleton, Tag } from "@/components/otclick/ui";
 import { IExternal, IList, IRefresh } from "@/components/otclick/icons";
+import CoverLetterEditor from "./cover-letter-editor";
 import styles from "./page.module.css";
 
 const PAGE_SIZE = 25;
@@ -40,6 +41,8 @@ type Vacancy = {
   score_explanation: string | null;
   hard_filter_reason: string | null;
   user_decision_reason: string | null;
+  cover_letter_draft: string | null;
+  cover_letter_meta: Record<string, unknown>;
   sources: VacancySource[];
 };
 
@@ -182,7 +185,7 @@ export default function VacanciesPage() {
           <div>
             <div className={styles.title}>Вакансии</div>
             <div style={{ fontSize: 12, color: "var(--muted)", marginTop: 3 }}>
-              discovery → оценка → ручной выбор. Отправки отсюда нет.
+              discovery → оценка → ручной выбор → черновик. Отправки отсюда нет.
             </div>
           </div>
           <div className={styles.spacer} />
@@ -219,13 +222,14 @@ export default function VacanciesPage() {
       ) : (
         <div className={styles.list}>
           {rows.map((vacancy) => {
-            const status = STATUS_LABEL[vacancy.status] ?? { label: vacancy.status, tone: "neutral" as const };
+            const currentStatus = STATUS_LABEL[vacancy.status] ?? { label: vacancy.status, tone: "neutral" as const };
             const details = vacancy.score_details ?? {};
             const open = openId === vacancy.id;
             const salary = salaryText(vacancy.salary);
             const busy = busyId === vacancy.id;
             const selectedLike = ["selected", "letter_draft", "approved"].includes(vacancy.status);
-            const finalLike = ["archived", "sending", "sent", "queued_to_send"].includes(vacancy.status);
+            const reviewableSelected = ["selected", "letter_draft"].includes(vacancy.status);
+            const finalLike = ["approved", "archived", "sending", "sent", "queued_to_send"].includes(vacancy.status);
 
             return (
               <Card key={vacancy.id} className={styles.vacancyCard}>
@@ -242,7 +246,7 @@ export default function VacanciesPage() {
                 </div>
 
                 <div className={styles.meta}>
-                  <Tag tone={status.tone} dot>{status.label}</Tag>
+                  <Tag tone={currentStatus.tone} dot>{currentStatus.label}</Tag>
                   {vacancy.hard_filter_reason && <Tag tone="err">hard filter</Tag>}
                   {typeof details.confidence === "number" && (
                     <Tag tone="neutral">confidence {details.confidence}%</Tag>
@@ -263,11 +267,11 @@ export default function VacanciesPage() {
                         выбрать
                       </Btn>
                     )}
-                    {selectedLike ? (
+                    {reviewableSelected ? (
                       <Btn kind="ghost" size="sm" disabled={busy} onClick={() => decide(vacancy, "review")}>
                         вернуть
                       </Btn>
-                    ) : (
+                    ) : !selectedLike ? (
                       <>
                         <Btn kind="soft" size="sm" disabled={busy} onClick={() => decide(vacancy, "hold", "отложено пользователем")}>
                           отложить
@@ -284,8 +288,31 @@ export default function VacanciesPage() {
                           отклонить
                         </Btn>
                       </>
-                    )}
+                    ) : null}
                   </div>
+                )}
+
+                {selectedLike && (
+                  <CoverLetterEditor
+                    vacancyId={vacancy.id}
+                    status={vacancy.status}
+                    initialDraft={vacancy.cover_letter_draft}
+                    meta={vacancy.cover_letter_meta ?? {}}
+                    onUpdated={(next) => {
+                      setRows((current) =>
+                        (current ?? []).map((row) =>
+                          row.id === vacancy.id
+                            ? {
+                                ...row,
+                                status: next.status,
+                                cover_letter_draft: next.cover_letter_draft,
+                                cover_letter_meta: next.cover_letter_meta,
+                              }
+                            : row,
+                        ),
+                      );
+                    }}
+                  />
                 )}
 
                 {rejectingId === vacancy.id && (
