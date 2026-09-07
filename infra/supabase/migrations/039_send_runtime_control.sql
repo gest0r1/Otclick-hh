@@ -1,14 +1,40 @@
 -- ============================================================
 -- 039_send_runtime_control.sql
--- Persistent per-user sender controls + single-account DB lease.
+-- Persistent per-user sender batches, controls and single-account DB lease.
 -- This does NOT activate the sender in worker_main.
 -- ============================================================
+
+CREATE TABLE IF NOT EXISTS application_send_batches (
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  user_id uuid NOT NULL REFERENCES profiles(id) ON DELETE CASCADE,
+  status text NOT NULL DEFAULT 'running' CHECK (
+    status IN ('running', 'paused', 'completed')
+  ),
+  total_jobs integer NOT NULL DEFAULT 0 CHECK (total_jobs >= 0),
+  created_at timestamptz NOT NULL DEFAULT now(),
+  started_at timestamptz NOT NULL DEFAULT now(),
+  finished_at timestamptz,
+  updated_at timestamptz NOT NULL DEFAULT now()
+);
+
+CREATE INDEX IF NOT EXISTS idx_application_send_batches_user_status
+  ON application_send_batches (user_id, status, created_at DESC);
+
+ALTER TABLE application_send_batches ENABLE ROW LEVEL SECURITY;
+-- No anon/authenticated policy: backend service-role only.
+
+ALTER TABLE application_send_queue
+  ADD COLUMN IF NOT EXISTS batch_id uuid REFERENCES application_send_batches(id) ON DELETE SET NULL;
+
+CREATE INDEX IF NOT EXISTS idx_application_send_queue_batch_status
+  ON application_send_queue (batch_id, status, queued_at);
 
 CREATE TABLE IF NOT EXISTS application_send_control (
   user_id uuid PRIMARY KEY REFERENCES profiles(id) ON DELETE CASCADE,
   desired_state text NOT NULL DEFAULT 'paused' CHECK (
     desired_state IN ('paused', 'running', 'stop_after_current')
   ),
+  active_batch_id uuid REFERENCES application_send_batches(id) ON DELETE SET NULL,
   safety_interval_seconds integer NOT NULL DEFAULT 10 CHECK (
     safety_interval_seconds BETWEEN 0 AND 300
   ),
@@ -53,6 +79,7 @@ BEGIN
     updated_at = now()
   WHERE user_id = p_user_id
     AND desired_state = 'running'
+    AND active_batch_id IS NOT NULL
     AND (
       lease_expires_at IS NULL
       OR lease_expires_at <= now()
