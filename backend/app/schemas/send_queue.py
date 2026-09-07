@@ -62,3 +62,20 @@ class SendRuntimeState(BaseModel):
 class SendRuntimeControlRequest(BaseModel):
     action: Literal["resume", "pause", "stop_after_current", "configure"]
     safety_interval_seconds: int | None = Field(default=None, ge=0, le=300)
+
+
+class BulkQueueRequest(BaseModel):
+    pipeline_ids: list[str] = Field(min_length=1, max_length=100)
+
+
+class BulkQueueResultItem(BaseModel):
+    pipeline_id: str
+    status: Literal["queued", "error"]
+    job_id: str | None = None
+    error: str | None = None
+
+
+class BulkQueueResponse(BaseModel):
+    results: list[BulkQueueResultItem]
+    queued: int
+    errors: int
