@@ -10,6 +10,7 @@ const ITEMS = [
   { href: "/vacancies/profile", label: "Профиль" },
   { href: "/vacancies/rules", label: "Правила", exact: true },
   { href: "/vacancies/rules/manage", label: "Управление" },
+  { href: "/vacancies/bulk", label: "Пакет" },
   { href: "/vacancies/send", label: "Отправка" },
 ];
 
