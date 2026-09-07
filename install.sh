@@ -14,6 +14,7 @@ INSTALL_ADMIN_PASSWORD=""
 FRESH_ENV=0
 LLM_VERIFY_STATUS="not configured"
 PROFILE_STATUS="not checked"
+CANDIDATE_LOCAL_DIR="$INSTALL_DIR/backend/data/candidate-local"
 
 if [[ "${EUID}" -ne 0 ]]; then
   echo "Run as root: sudo bash install.sh" >&2
@@ -228,16 +229,22 @@ PY
 }
 
 configure_public_url() {
-  local existing_url public_url domain host_ip site_address default_url
+  local existing_url public_url domain host_ip site_address default_url reconfigure
   existing_url="$(env_get NEXT_PUBLIC_APP_URL)"
   public_url="${OTCLICK_PUBLIC_URL:-}"
   domain="${OTCLICK_DOMAIN:-}"
+  reconfigure="${OTCLICK_RECONFIGURE:-0}"
 
   if [[ -z "$public_url" && -n "$domain" ]]; then
     domain="${domain#http://}"
     domain="${domain#https://}"
     domain="${domain%%/*}"
     public_url="https://$domain"
+  fi
+
+  # Normal update: preserve the current origin and do not ask questions again.
+  if [[ "$FRESH_ENV" -ne 1 && "$reconfigure" != "1" && -z "$public_url" && -z "$domain" && -n "$existing_url" ]]; then
+    public_url="$existing_url"
   fi
 
   host_ip="${OTCLICK_HOST_IP:-$(hostname -I 2>/dev/null | tr ' ' '\n' | grep -m1 -E '^[0-9]+\.' || true)}"
@@ -313,9 +320,25 @@ configure_llm() {
   model="${OTCLICK_OPENAI_MODEL:-}"
   provider="${OTCLICK_LLM_PROVIDER:-}"
 
+  case "$provider" in
+    opencode-go)
+      base="${base:-https://opencode.ai/zen/go/v1}"
+      model="${model:-longcat-2.0}"
+      ;;
+    longcat-direct)
+      base="${base:-https://api.longcat.chat/openai/v1}"
+      model="${model:-LongCat-2.0}"
+      ;;
+    disabled)
+      base="${base:-https://api.openai.com/v1}"
+      model="${model:-gpt-5.4-nano}"
+      key=""
+      ;;
+  esac
+
   if [[ -z "$base" || -z "$model" ]]; then
     if ! have_tty; then
-      [[ -n "$base" && -n "$model" ]] || die "non-interactive install requires OTCLICK_OPENAI_BASE_URL and OTCLICK_OPENAI_MODEL, or OTCLICK_LLM_PROVIDER=disabled"
+      die "non-interactive install requires OTCLICK_OPENAI_BASE_URL and OTCLICK_OPENAI_MODEL, or OTCLICK_LLM_PROVIDER=disabled"
     else
       echo >/dev/tty
       echo 'LLM provider:' >/dev/tty
@@ -354,10 +377,10 @@ configure_llm() {
     fi
   fi
 
-  if [[ "$provider" == "disabled" || "${OTCLICK_LLM_PROVIDER:-}" == "disabled" ]]; then
+  if [[ "$provider" == "disabled" ]]; then
     env_set OPENAI_API_KEY ""
-    env_set OPENAI_BASE_URL "${base:-https://api.openai.com/v1}"
-    env_set OPENAI_MODEL "${model:-gpt-5.4-nano}"
+    env_set OPENAI_BASE_URL "$base"
+    env_set OPENAI_MODEL "$model"
     env_set OPENAI_STRUCTURED_OUTPUT_METHOD function_calling
     LLM_VERIFY_STATUS="disabled by user"
     return 0
@@ -405,6 +428,22 @@ ensure_env() {
   configure_public_url
   configure_first_user
   configure_llm
+}
+
+ensure_candidate_files() {
+  local source_dir="$INSTALL_DIR/backend/data/candidate"
+  mkdir -p "$CANDIDATE_LOCAL_DIR"
+  chmod 700 "$CANDIDATE_LOCAL_DIR"
+  if [[ ! -f "$CANDIDATE_LOCAL_DIR/candidate_profile.json" ]]; then
+    cp "$source_dir/candidate_profile.json" "$CANDIDATE_LOCAL_DIR/candidate_profile.json"
+    chmod 600 "$CANDIDATE_LOCAL_DIR/candidate_profile.json"
+    log "created local candidate profile override"
+  fi
+  if [[ ! -f "$CANDIDATE_LOCAL_DIR/confirmed_facts.json" ]]; then
+    cp "$source_dir/confirmed_facts.json" "$CANDIDATE_LOCAL_DIR/confirmed_facts.json"
+    chmod 600 "$CANDIDATE_LOCAL_DIR/confirmed_facts.json"
+    log "created local confirmed-facts override"
+  fi
 }
 
 wait_http() {
@@ -511,20 +550,21 @@ ensure_single_user() {
   fi
 
   sync_admin_email "$user_id"
-  log "loading curated candidate profile/facts"
-  docker compose exec -T api python scripts/load_candidate_data.py --user-id "$user_id"
+  log "loading local candidate profile/facts"
+  docker compose exec -T api python scripts/load_candidate_data.py \
+    --user-id "$user_id" --data-dir data/candidate-local
 }
 
 check_candidate_profile() {
   local report
-  report="$(python3 - "$INSTALL_DIR" <<'PY'
+  report="$(python3 - "$CANDIDATE_LOCAL_DIR" <<'PY'
 import json
 from pathlib import Path
 import sys
 
 root = Path(sys.argv[1])
-profile_path = root / "backend/data/candidate/candidate_profile.json"
-facts_path = root / "backend/data/candidate/confirmed_facts.json"
+profile_path = root / "candidate_profile.json"
+facts_path = root / "confirmed_facts.json"
 required = [
     "target_roles", "next_role_priorities", "not_interested", "organization_level",
     "industries", "business_scale", "compensation", "positioning",
@@ -546,9 +586,12 @@ missing = [key for key in required if not profile.get(key)]
 if missing:
     errors.append("empty required profile sections: " + ", ".join(missing))
 facts = facts_doc.get("facts") if isinstance(facts_doc, dict) else None
+guardrails = facts_doc.get("guardrails") if isinstance(facts_doc, dict) else None
 if not isinstance(facts, list) or not facts:
     errors.append("confirmed_facts.json has no facts")
     facts = []
+if not isinstance(guardrails, list):
+    errors.append("confirmed_facts.json: guardrails must be an array")
 for i, fact in enumerate(facts, 1):
     if not isinstance(fact, dict) or not fact.get("key") or not fact.get("statement"):
         errors.append(f"fact #{i} requires key and statement")
@@ -565,7 +608,7 @@ PY
   if [[ "$state" == "OK" ]]; then
     PROFILE_STATUS="complete; $count confirmed facts loaded; no mandatory manual completion"
   else
-    PROFILE_STATUS="ACTION REQUIRED; see files below"
+    PROFILE_STATUS="ACTION REQUIRED; see local files below"
     log "candidate profile validation requires attention:"
     sed -n '3,$p' <<<"$report" | sed 's/^/[otclick]   - /'
   fi
@@ -587,17 +630,19 @@ print_profile_instructions() {
   user_id="$(env_get OTCLICK_USER_ID)"
   echo
   echo "Candidate profile: $PROFILE_STATUS"
-  echo "Files used by scorer / cover writer:"
-  echo "  $INSTALL_DIR/backend/data/candidate/candidate_profile.json"
-  echo "    Edit only when needed: target_roles, next_role_priorities, not_interested,"
+  echo "Local, update-safe files used by scorer / cover writer:"
+  echo "  $CANDIDATE_LOCAL_DIR/candidate_profile.json"
+  echo "    Edit when needed: target_roles, next_role_priorities, not_interested,"
   echo "    organization_level, industries, business_scale, compensation, positioning,"
-  echo "    strong_role_signals, weak_role_signals and claim/positioning constraints."
-  echo "  $INSTALL_DIR/backend/data/candidate/confirmed_facts.json"
+  echo "    strong_role_signals and weak_role_signals."
+  echo "  $CANDIDATE_LOCAL_DIR/confirmed_facts.json"
   echo "    Add only confirmed facts. Each fact needs key + statement; keep metrics/tags"
-  echo "    and any claim guardrails precise. Do not add assumptions as confirmed facts."
-  echo "After editing either file, reload prepared candidate data with:"
-  echo "  cd $INSTALL_DIR && docker compose exec -T api python scripts/load_candidate_data.py --user-id '$user_id'"
-  echo "The current bundled profile is already curated; edit it only if the summary above says ACTION REQUIRED or you want to change your positioning/facts."
+  echo "    and guardrails precise. Do not add assumptions as confirmed facts."
+  echo "These files are ignored by Git, so future one-command updates preserve them."
+  echo "Bundled defaults remain in $INSTALL_DIR/backend/data/candidate/ and are not meant for local edits."
+  echo "After editing either local file, reload prepared candidate data with:"
+  echo "  cd $INSTALL_DIR && docker compose up -d --build api worker && docker compose exec -T api python scripts/load_candidate_data.py --user-id '$user_id' --data-dir data/candidate-local"
+  echo "The current local profile is seeded from the curated data; edit it only if the summary above says ACTION REQUIRED or you want to change your positioning/facts."
 }
 
 print_result() {
@@ -639,6 +684,7 @@ main() {
   install_packages
   checkout_repo
   ensure_env
+  ensure_candidate_files
   start_stack
   ensure_single_user
   check_candidate_profile
