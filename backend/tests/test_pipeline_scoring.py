@@ -21,6 +21,20 @@ def test_hard_filter_does_not_reject_explicit_strategic_role():
 
     assert hard_filter_reason({"title": "CIO / Руководитель инфраструктуры"}) is None
     assert hard_filter_reason({"title": "CDTO"}) is None
+    assert (
+        hard_filter_reason({"title": "Директор по инфраструктуре и цифровой трансформации"})
+        is None
+    )
+
+
+def test_cto_acronym_does_not_match_inside_generic_director_word():
+    from app.services.pipeline_scoring import hard_filter_reason
+
+    assert (
+        hard_filter_reason({"title": "Infrastructure Director / Head of Infrastructure"})
+        == "role_mismatch_infrastructure"
+    )
+    assert hard_filter_reason({"title": "CTO / Head of Infrastructure"}) is None
 
 
 def test_structured_score_total_is_sum_of_components():
