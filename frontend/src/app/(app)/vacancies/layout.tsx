@@ -8,6 +8,7 @@ const ITEMS = [
   { href: "/vacancies", label: "Вакансии", exact: true },
   { href: "/vacancies/sources", label: "Источники" },
   { href: "/vacancies/run", label: "Запуск" },
+  { href: "/vacancies/stats", label: "Статистика" },
   { href: "/vacancies/profile", label: "Профиль" },
   { href: "/vacancies/rules", label: "Правила", exact: true },
   { href: "/vacancies/rules/manage", label: "Управление" },
