@@ -3,11 +3,34 @@ from __future__ import annotations
 from fastapi import APIRouter, Depends, Query
 
 from app.api.deps import get_current_user
-from app.schemas.send_queue import SendQueueItem
-from app.services import send_queue_service
+from app.schemas.send_queue import (
+    SendQueueItem,
+    SendRuntimeControlRequest,
+    SendRuntimeState,
+)
+from app.services import send_queue_service, send_runtime_control
 
 
 router = APIRouter(prefix="/api/send-queue", tags=["send-queue"])
+
+
+@router.get("/control", response_model=SendRuntimeState)
+async def get_control(user_id: str = Depends(get_current_user)):
+    state = await send_runtime_control.get_state(user_id)
+    return SendRuntimeState(**state)
+
+
+@router.post("/control", response_model=SendRuntimeState)
+async def set_control(
+    body: SendRuntimeControlRequest,
+    user_id: str = Depends(get_current_user),
+):
+    state = await send_runtime_control.set_control(
+        user_id,
+        action=body.action,
+        safety_interval_seconds=body.safety_interval_seconds,
+    )
+    return SendRuntimeState(**state)
 
 
 @router.get("", response_model=list[SendQueueItem])
