@@ -15,6 +15,7 @@ from urllib.parse import urlencode
 from app.db.supabase import service_client
 from app.hh import web
 from app.hh.page_json import find_state
+from app.services import source_statistics
 from app.services.form_filler import (
     WebSessionExpired,
     load_web_session,
@@ -55,6 +56,23 @@ def _existing_application_ids(user_id: str, vacancy_ids: list[str]) -> set[str]:
         .execute()
     )
     return {str(row["vacancy_id"]) for row in (res.data or []) if row.get("vacancy_id")}
+
+
+def _existing_pipeline_ids(user_id: str, vacancy_ids: list[str]) -> set[str]:
+    if not vacancy_ids:
+        return set()
+    res = (
+        service_client.table("vacancy_pipeline")
+        .select("hh_vacancy_id")
+        .eq("user_id", user_id)
+        .in_("hh_vacancy_id", vacancy_ids)
+        .execute()
+    )
+    return {
+        str(row["hh_vacancy_id"])
+        for row in (res.data or [])
+        if row.get("hh_vacancy_id")
+    }
 
 
 def _update_source(source_id: str, **changes) -> None:
@@ -137,6 +155,8 @@ async def discover_source(user_id: str, source: dict) -> dict[str, int | bool]:
     fetched = 0
     persisted = 0
     skipped_applied = 0
+    new_count = 0
+    duplicate_count = 0
     overlap_found = False
     first_page_ids: list[str] = []
     checked_at = _now()
@@ -151,7 +171,10 @@ async def discover_source(user_id: str, source: dict) -> dict[str, int | bool]:
             ids = [str(item["id"]) for item in items]
             if page == 0:
                 first_page_ids = ids[:40]
-            applied = await asyncio.to_thread(_existing_application_ids, user_id, ids)
+            applied, existing_pipeline = await asyncio.gather(
+                asyncio.to_thread(_existing_application_ids, user_id, ids),
+                asyncio.to_thread(_existing_pipeline_ids, user_id, ids),
+            )
 
             stop_after_page = False
             for item in items:
@@ -172,6 +195,11 @@ async def discover_source(user_id: str, source: dict) -> dict[str, int | bool]:
                     source_id=source_id,
                 )
                 persisted += 1
+                if vid in existing_pipeline:
+                    duplicate_count += 1
+                else:
+                    new_count += 1
+                    existing_pipeline.add(vid)
 
             if stop_after_page:
                 break
@@ -198,6 +226,13 @@ async def discover_source(user_id: str, source: dict) -> dict[str, int | bool]:
         )
         raise
 
+    await asyncio.to_thread(
+        source_statistics.increment,
+        [source_id],
+        new=new_count,
+        duplicate=duplicate_count,
+    )
+
     warning = None
     if not initial and not overlap_found:
         warning = "cursor_overlap_not_found_within_scan_limit"
@@ -218,6 +253,8 @@ async def discover_source(user_id: str, source: dict) -> dict[str, int | bool]:
             "checked_at": checked_at,
             "fetched": fetched,
             "persisted": persisted,
+            "new": new_count,
+            "duplicate": duplicate_count,
             "skipped_applied": skipped_applied,
             "overlap_found": overlap_found,
             "error": warning,
@@ -233,6 +270,8 @@ async def discover_source(user_id: str, source: dict) -> dict[str, int | bool]:
     return {
         "fetched": fetched,
         "persisted": persisted,
+        "new": new_count,
+        "duplicate": duplicate_count,
         "skipped_applied": skipped_applied,
         "overlap_found": overlap_found,
     }
