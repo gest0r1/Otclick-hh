@@ -33,7 +33,7 @@ SECURITY DEFINER
 SET search_path = public
 AS $$
 DECLARE
-  did_acquire boolean := false;
+  affected bigint := 0;
 BEGIN
   IF p_owner IS NULL OR btrim(p_owner) = '' THEN
     RAISE EXCEPTION 'lease owner is required';
@@ -63,8 +63,8 @@ BEGIN
       OR last_cycle_at + make_interval(secs => safety_interval_seconds) <= now()
     );
 
-  GET DIAGNOSTICS did_acquire = ROW_COUNT;
-  RETURN did_acquire;
+  GET DIAGNOSTICS affected = ROW_COUNT;
+  RETURN affected > 0;
 END;
 $$;
 
@@ -79,7 +79,7 @@ SECURITY DEFINER
 SET search_path = public
 AS $$
 DECLARE
-  did_release boolean := false;
+  affected bigint := 0;
 BEGIN
   UPDATE application_send_control
   SET
@@ -95,7 +95,7 @@ BEGIN
   WHERE user_id = p_user_id
     AND lease_owner = p_owner;
 
-  GET DIAGNOSTICS did_release = ROW_COUNT;
-  RETURN did_release;
+  GET DIAGNOSTICS affected = ROW_COUNT;
+  RETURN affected > 0;
 END;
 $$;
