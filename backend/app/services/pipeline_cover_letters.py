@@ -18,7 +18,12 @@ from app.ai.agent import HHAgent
 from app.ai.prompts import sanitize_ai_text
 from app.config import settings
 from app.db.supabase import service_client
-from app.services import candidate_context_service, vacancy_pipeline, vacancy_review_service
+from app.services import (
+    candidate_context_service,
+    context_fingerprints,
+    vacancy_pipeline,
+    vacancy_review_service,
+)
 from app.services.form_filler import _resume_summary, load_resume
 
 
@@ -28,6 +33,7 @@ class CoverDraftResult(BaseModel):
     language: str = Field(min_length=2, max_length=16)
 
 
+COVER_PROMPT_VERSION = 1
 _ALLOWED_STATUSES = frozenset({"selected", "letter_draft"})
 _GENERIC_OPENINGS = (
     "здравствуйте",
@@ -180,13 +186,21 @@ async def generate_draft(user_id: str, pipeline_id: str) -> dict:
     except ValueError as ex:
         raise HTTPException(status_code=502, detail=str(ex)) from ex
 
+    cover_fp = context_fingerprints.cover_context(
+        context=context,
+        vacancy=vacancy,
+        resume_row=resume_row,
+        model=settings.OPENAI_MODEL,
+        prompt_version=COVER_PROMPT_VERSION,
+    )
     meta = {
         "fact_keys": selected_keys,
         "language": result.language,
-        "model": settings.OPENAI_MODEL,
         "profile_version": context.get("version"),
         "resume_id": str(resume_row["id"]),
+        "resume_synced_at": resume_row.get("synced_at"),
         "edited_by_user": False,
+        **cover_fp,
     }
     changes: dict[str, Any] = {
         "resume_id": str(resume_row["id"]),
