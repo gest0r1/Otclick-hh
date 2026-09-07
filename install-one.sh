@@ -157,6 +157,34 @@ PYMAN
   docker image inspect aiautoclicker-frontend:latest >/dev/null 2>&1 || return 24
 }
 
+diagnose_stack() {
+  local service id state health exit_code
+  echo >&2
+  echo "[otclick] compose status:" >&2
+  docker compose ps -a >&2 || true
+  echo >&2
+  echo "[otclick] logs for exited/unhealthy services:" >&2
+
+  for service in db migrate auth rest realtime storage storage-init kong api worker frontend caddy; do
+    id="$(docker compose ps -a -q "$service" 2>/dev/null || true)"
+    [[ -n "$id" ]] || continue
+    state="$(docker inspect -f '{{.State.Status}}' "$id" 2>/dev/null || true)"
+    exit_code="$(docker inspect -f '{{.State.ExitCode}}' "$id" 2>/dev/null || true)"
+    health="$(docker inspect -f '{{if .State.Health}}{{.State.Health.Status}}{{end}}' "$id" 2>/dev/null || true)"
+
+    if [[ "$state" != "running" || "$health" == "unhealthy" ]]; then
+      # Successful one-shot services are expected to be exited 0 and add no value
+      # to the failure report.
+      if [[ "$state" == "exited" && "$exit_code" == "0" && ( "$service" == "migrate" || "$service" == "storage-init" ) ]]; then
+        continue
+      fi
+      echo >&2
+      echo "[otclick] --- ${service}: state=${state:-unknown} exit=${exit_code:-?} health=${health:-n/a} ---" >&2
+      docker compose logs --no-color --tail=120 "$service" >&2 || true
+    fi
+  done
+}
+
 start_stack() {
   log "[5/8] validating Docker Compose configuration"
   docker compose config >/dev/null
@@ -174,7 +202,11 @@ start_stack() {
   fi
 
   log "[8/8] starting services and running health checks"
-  docker compose up -d --no-build --pull never >>"$LOG_FILE" 2>&1
+  if ! docker compose up -d --no-build --pull never >>"$LOG_FILE" 2>&1; then
+    echo "[otclick] docker compose up failed before health checks completed." >&2
+    diagnose_stack
+    return 1
+  fi
   wait_migrate
   wait_http http://127.0.0.1:8000/health backend 90
   wait_http http://127.0.0.1:3000 frontend 90
@@ -212,8 +244,8 @@ replace_once(
     echo "Database backup: $BACKUP_FILE"
   fi
   echo "Log: $LOG_FILE"
-  echo "Last diagnostic lines:"
-  tail -n 30 "$LOG_FILE" 2>/dev/null || true
+  echo "The stack can be retried without downloading/building images:"
+  echo "  cd $INSTALL_DIR && docker compose up -d --no-build --pull never"
   echo "No automatic DB rollback was attempted. Forward migrations may not be backward-compatible."
   exit "$code"
 }
