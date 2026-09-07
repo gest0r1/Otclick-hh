@@ -11,6 +11,8 @@ import hashlib
 import json
 from typing import Any
 
+from app.config import settings
+
 SCORER_PROMPT_VERSION = 1
 COVER_PROMPT_VERSION = 1
 
@@ -88,6 +90,15 @@ def vacancy_hash(vacancy: dict) -> str:
     )
 
 
+def _llm_contract(model: str) -> dict[str, str]:
+    """Non-secret provider identity; changing it must make old AI output stale."""
+    return {
+        "model": model,
+        "provider_base_url": settings.OPENAI_BASE_URL.rstrip("/"),
+        "structured_output_method": settings.OPENAI_STRUCTURED_OUTPUT_METHOD,
+    }
+
+
 def score_context(
     *,
     context: dict,
@@ -103,7 +114,7 @@ def score_context(
         "candidate_hash": candidate,
         "rules_hash": rule_set,
         "vacancy_hash": vacancy_content,
-        "model": model,
+        **_llm_contract(model),
         "prompt_version": prompt_version,
     }
     return {**payload, "context_hash": digest(payload)}
@@ -149,7 +160,7 @@ def cover_context(
         "vacancy_hash": vacancy_hash(vacancy),
         "resume_hash": resume_hash(resume_row),
         "score_anchor_hash": score_anchor_hash(vacancy),
-        "model": model,
+        **_llm_contract(model),
         "prompt_version": prompt_version,
     }
     return {**payload, "context_hash": digest(payload)}
