@@ -9,6 +9,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import re
 
 from pydantic import BaseModel, Field
 
@@ -43,15 +44,15 @@ class StructuredVacancyScore(BaseModel):
         return c.role_fit + c.scale_fit + c.transformation_mandate + c.industry_business_context
 
 
+_STRATEGIC_ACRONYM = re.compile(r"(?<![a-z0-9])(?:cio|cdto|cto)(?![a-z0-9])", re.IGNORECASE)
 _STRATEGIC_TITLE_SIGNALS = (
-    "cio",
-    "cdto",
-    "cto",
     "ит директор",
     "it директор",
     "директор по ит",
     "директор по информационным технологиям",
     "директор по цифров",
+    "цифровой трансформац",
+    "digital transformation",
     "digital director",
     "technology director",
 )
@@ -69,12 +70,13 @@ def hard_filter_reason(vacancy: dict) -> str | None:
 
     Candidate industry/scale preferences are not hard-filtered here because HH
     vacancy text often lacks reliable company scale/holding context. Unknown is
-    intentionally not reject.
+    intentionally not reject. Any explicit transformation/C-level signal wins
+    over a technical word in the same title so mixed roles reach the scorer.
     """
     title = str(vacancy.get("title") or vacancy.get("name") or "").strip().lower()
     if not title:
         return None
-    if any(signal in title for signal in _STRATEGIC_TITLE_SIGNALS):
+    if _STRATEGIC_ACRONYM.search(title) or any(signal in title for signal in _STRATEGIC_TITLE_SIGNALS):
         return None
     for patterns, reason in _HARD_TITLE_MISMATCHES:
         if any(pattern in title for pattern in patterns):
