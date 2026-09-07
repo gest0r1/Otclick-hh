@@ -29,10 +29,12 @@ class VacancyPipelineResponse(BaseModel):
     score: int | None = None
     score_details: dict[str, Any] | None = None
     score_explanation: str | None = None
+    score_stale: bool | None = None
     hard_filter_reason: str | None = None
     user_decision_reason: str | None = None
     cover_letter_draft: str | None = None
     cover_letter_meta: dict[str, Any] = Field(default_factory=dict)
+    cover_stale: bool | None = None
     approved_letter_hash: str | None = None
     approved_at: str | None = None
     created_at: str
