@@ -1,13 +1,11 @@
 """Local self-hosted Supabase wiring — static config checks (no running stack needed).
 
-Guards the class of bug that broke hh auth after the cloud→local move: the frontend
-was built with NEXT_PUBLIC_API_URL pointing at Kong (54321) instead of the backend
-(8000), so every /api/* call 404'd. NEXT_PUBLIC_* is baked at image build time, so a
-wrong default in a template file silently ships.
+The production frontend image must be portable between installations: per-install
+Supabase JWT/anon material is supplied at container runtime, never baked into the
+Next.js image. Browser traffic stays same-origin behind Caddy.
 """
 
 import os
-import re
 from pathlib import Path
 
 # Set required env BEFORE importing app modules
@@ -92,10 +90,10 @@ def test_supabase_public_url_has_local_default():
     assert Settings.model_fields["SUPABASE_PUBLIC_URL"].default == "http://localhost:54321"
 
 
-# --- port wiring: backend is 8000, Kong is 54321 -----------------------------------
+# --- local-dev template ------------------------------------------------------------
 
 
-def test_frontend_env_template_points_api_at_backend_not_kong():
+def test_frontend_dev_env_template_keeps_direct_local_ports():
     text = _read("frontend/.env.local.example")
 
     api_url = _env_value(text, "NEXT_PUBLIC_API_URL")
@@ -107,12 +105,36 @@ def test_frontend_env_template_points_api_at_backend_not_kong():
     assert api_url != supabase_url
 
 
-def test_compose_browser_api_default_uses_caddy_same_origin():
-    compose = _read("docker-compose.yml")
+# --- production frontend portability -----------------------------------------------
 
-    match = re.search(r"NEXT_PUBLIC_API_URL:\s*\$\{NEXT_PUBLIC_API_URL:-([^}]+)\}", compose)
-    assert match, "compose must define a NEXT_PUBLIC_API_URL build arg with a default"
-    assert match.group(1).strip() == "http://localhost"
+
+def test_production_frontend_does_not_bake_install_specific_supabase_values():
+    compose = _read("docker-compose.yml")
+    dockerfile = _read("frontend/Dockerfile")
+
+    frontend_block = compose.split("  frontend:", 1)[1].split("\n  caddy:", 1)[0]
+    assert "args:" not in frontend_block
+    assert "SUPABASE_URL: http://kong:8000" in frontend_block
+    assert "SUPABASE_ANON_KEY: ${ANON_KEY}" in frontend_block
+
+    assert "ARG NEXT_PUBLIC_SUPABASE_ANON_KEY" not in dockerfile
+    assert "ARG NEXT_PUBLIC_SUPABASE_URL" not in dockerfile
+    assert "ARG NEXT_PUBLIC_API_URL" not in dockerfile
+
+
+def test_browser_client_uses_runtime_cookie_and_same_origin():
+    client = _read("frontend/src/lib/supabase/client.ts")
+    api = _read("frontend/src/lib/api.ts")
+    middleware = _read("frontend/src/lib/supabase/middleware.ts")
+
+    assert 'ANON_KEY_COOKIE = "otclick-supabase-anon-key"' in client
+    assert "window.location.origin" in client
+    assert "NEXT_PUBLIC_SUPABASE_ANON_KEY" not in client
+    assert "NEXT_PUBLIC_SUPABASE_URL" not in client
+    assert "NEXT_PUBLIC_API_URL" not in api
+    assert "const res = await fetch(path" in api
+    assert "process.env.SUPABASE_ANON_KEY" in middleware
+    assert "nextResponse.cookies.set(ANON_KEY_COOKIE" in middleware
 
 
 def test_compose_keeps_api_and_kong_diagnostics_on_loopback():
