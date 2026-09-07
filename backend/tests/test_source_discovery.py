@@ -1,14 +1,20 @@
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, patch
+
+import pytest
 
 
-async def test_discovery_stops_when_previous_head_is_reached():
+@pytest.mark.asyncio
+async def test_discovery_stops_when_previous_head_is_reached_and_updates_stats():
     from app.services import source_discovery as sd
 
     source = {
         "id": "s1",
         "resume_id": "r1",
         "query_pairs": [{"key": "text", "value": "CIO"}],
-        "cursor": {"head_ids": ["old-1", "old-2"]},
+        "cursor": {
+            "head_ids": ["old-1", "old-2"],
+            "stats": {"runs": 2, "fetched": 10, "persisted": 8, "skipped_applied": 2, "errors": 1},
+        },
     }
     page = [
         {"id": "new-1", "name": "CIO", "employer": {"id": "1", "name": "A"}},
@@ -38,8 +44,47 @@ async def test_discovery_stops_when_previous_head_is_reached():
     assert result["overlap_found"] is True
     assert result["persisted"] == 1
     final = source_updates[-1]
+    assert final["cursor"]["version"] == 2
     assert final["cursor"]["head_ids"] == ["new-1", "old-1", "older"]
+    assert final["cursor"]["stats"] == {
+        "runs": 3,
+        "fetched": 11,
+        "persisted": 9,
+        "skipped_applied": 2,
+        "errors": 1,
+    }
+    assert final["cursor"]["last_run"]["persisted"] == 1
     assert final["last_error"] is None
+
+
+@pytest.mark.asyncio
+async def test_discovery_error_increments_source_error_counter():
+    from app.services import source_discovery as sd
+
+    source = {
+        "id": "s1",
+        "cursor": {
+            "head_ids": ["old"],
+            "stats": {"runs": 4, "fetched": 20, "persisted": 12, "skipped_applied": 1, "errors": 2},
+        },
+    }
+    updates: list[dict] = []
+
+    def fake_update(source_id, **changes):
+        updates.append(changes)
+
+    with (
+        patch.object(sd, "_search_page", new=AsyncMock(side_effect=RuntimeError("hh changed"))),
+        patch.object(sd, "_update_source", side_effect=fake_update),
+    ):
+        with pytest.raises(RuntimeError):
+            await sd.discover_source("u1", source)
+
+    final = updates[-1]
+    assert final["cursor"]["stats"]["runs"] == 5
+    assert final["cursor"]["stats"]["errors"] == 3
+    assert final["cursor"]["last_run"]["error"] == "hh changed"
+    assert final["last_error"] == "hh changed"
 
 
 def test_request_pairs_keep_duplicate_hh_parameters():
