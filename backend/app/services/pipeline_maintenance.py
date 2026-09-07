@@ -21,7 +21,6 @@ from app.services import (
     vacancy_review_service,
 )
 
-
 SAFE_SCORE_STATUSES = ("scored", "review", "score_error")
 SAFE_COVER_STATUS = "letter_draft"
 MAX_SCORE_MAINTENANCE = 50

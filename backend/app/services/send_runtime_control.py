@@ -16,7 +16,6 @@ from fastapi import HTTPException
 from app.db.supabase import service_client
 from app.services import vacancy_pipeline
 
-
 RUNTIME_WIRED = False
 _TERMINAL_QUEUE_STATUSES = frozenset({"sent", "failed", "manual_required", "cancelled"})
 

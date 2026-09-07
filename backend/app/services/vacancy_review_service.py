@@ -17,7 +17,6 @@ from app.db.supabase import service_client
 from app.hh import vacancy_page, web
 from app.services import candidate_context_service, context_fingerprints, vacancy_pipeline
 
-
 _VACANCY_COLUMNS = (
     "id,resume_id,hh_vacancy_id,vacancy_url,title,employer_id,employer_name,"
     "area_name,salary,published_at,discovered_at,last_seen_at,description,status,"

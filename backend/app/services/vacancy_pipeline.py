@@ -2,11 +2,10 @@
 
 from __future__ import annotations
 
+from collections.abc import Iterable
 from datetime import UTC, datetime
-from typing import Iterable
 
 from app.db.supabase import service_client
-
 
 PIPELINE_STATUSES = frozenset(
     {

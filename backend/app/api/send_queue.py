@@ -12,7 +12,6 @@ from app.schemas.send_queue import (
 )
 from app.services import bulk_send_queue, send_queue_service, send_runtime_control
 
-
 router = APIRouter(prefix="/api/send-queue", tags=["send-queue"])
 
 

@@ -23,7 +23,6 @@ from app.services import (
     vacancy_review_service,
 )
 
-
 router = APIRouter(prefix="/api/vacancies", tags=["vacancies"])
 _maintenance_locks: dict[str, asyncio.Lock] = {}
 

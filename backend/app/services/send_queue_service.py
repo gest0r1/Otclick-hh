@@ -14,7 +14,6 @@ from fastapi import HTTPException, status
 from app.db.supabase import service_client
 from app.services import vacancy_pipeline, vacancy_review_service
 
-
 _QUEUE_COLUMNS = (
     "id,vacancy_pipeline_id,resume_id,hh_vacancy_id,approved_letter_hash,"
     "batch_id,status,attempts,last_error,queued_at,started_at,finished_at,created_at,updated_at"

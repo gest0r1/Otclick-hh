@@ -4,7 +4,6 @@ from app.api.deps import get_current_user
 from app.schemas.candidate_context import CandidateContextResponse
 from app.services import candidate_context_service
 
-
 router = APIRouter(prefix="/api/candidate-context", tags=["candidate-context"])
 
 

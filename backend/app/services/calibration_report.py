@@ -11,7 +11,6 @@ from statistics import mean
 
 from app.services import vacancy_review_service
 
-
 POSITIVE_STATUSES = (
     "selected",
     "letter_draft",

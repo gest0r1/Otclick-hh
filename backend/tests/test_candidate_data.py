@@ -6,7 +6,6 @@ from scripts.load_candidate_data import (
     load_documents,
 )
 
-
 DATA_DIR = Path(__file__).resolve().parents[1] / "data" / "candidate"
 
 

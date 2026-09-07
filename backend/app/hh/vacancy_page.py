@@ -16,7 +16,6 @@ from app.hh.page_json import find_state
 from app.hh.web import WEB_BASE, _get, _normalise_vacancy
 from app.services.form_filler import load_web_session
 
-
 _BLOCK_TAGS = frozenset({"br", "div", "p", "li", "ul", "ol", "h1", "h2", "h3", "h4"})
 _VOID_TAGS = frozenset({"area", "base", "br", "col", "embed", "hr", "img", "input", "link", "meta", "param", "source", "track", "wbr"})
 

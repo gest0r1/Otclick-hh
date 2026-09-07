@@ -13,7 +13,6 @@ from app.schemas.selection_rules import (
 )
 from app.services import selection_rule_actions, selection_rules
 
-
 router = APIRouter(prefix="/api/selection-rules", tags=["selection-rules"])
 
 

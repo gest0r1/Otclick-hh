@@ -13,7 +13,6 @@ from fastapi import HTTPException
 from app.db.supabase import service_client
 from app.services import selection_rules, vacancy_pipeline
 
-
 RESCORABLE_STATUSES = ("scored", "review", "score_error")
 
 
