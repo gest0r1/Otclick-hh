@@ -44,6 +44,13 @@ class SearchSourceUpdate(BaseModel):
         return self
 
 
+class SearchSourceStats(BaseModel):
+    new: int = 0
+    duplicate: int = 0
+    hard_filtered: int = 0
+    score_error: int = 0
+
+
 class SearchSourceResponse(BaseModel):
     id: str
     resume_id: str | None = None
@@ -52,6 +59,7 @@ class SearchSourceResponse(BaseModel):
     raw_url: str | None = None
     query_pairs: list[QueryPair] = Field(default_factory=list)
     cursor: dict[str, Any] = Field(default_factory=dict)
+    stats: SearchSourceStats = Field(default_factory=SearchSourceStats)
     enabled: bool = True
     last_checked_at: datetime | None = None
     last_success_at: datetime | None = None
