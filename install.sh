@@ -10,7 +10,10 @@ LOG_FILE="$LOG_DIR/install-$STAMP.log"
 PREVIOUS_SHA=""
 BACKUP_FILE=""
 GENERATED_PASSWORD=""
+INSTALL_ADMIN_PASSWORD=""
 FRESH_ENV=0
+LLM_VERIFY_STATUS="not configured"
+PROFILE_STATUS="not checked"
 
 if [[ "${EUID}" -ne 0 ]]; then
   echo "Run as root: sudo bash install.sh" >&2
@@ -41,6 +44,52 @@ on_error() {
   exit "$code"
 }
 trap on_error ERR
+
+have_tty() { [[ -r /dev/tty && -w /dev/tty ]]; }
+
+prompt_text() {
+  local label="$1" default_value="${2:-}" answer
+  if ! have_tty; then
+    printf '%s' "$default_value"
+    return 0
+  fi
+  if [[ -n "$default_value" ]]; then
+    printf '%s [%s]: ' "$label" "$default_value" >/dev/tty
+  else
+    printf '%s: ' "$label" >/dev/tty
+  fi
+  IFS= read -r answer </dev/tty
+  printf '%s' "${answer:-$default_value}"
+}
+
+prompt_secret() {
+  local label="$1" answer
+  if ! have_tty; then
+    printf ''
+    return 0
+  fi
+  printf '%s: ' "$label" >/dev/tty
+  IFS= read -r -s answer </dev/tty
+  printf '\n' >/dev/tty
+  printf '%s' "$answer"
+}
+
+prompt_yes_no() {
+  local label="$1" default="${2:-n}" answer
+  if ! have_tty; then
+    [[ "$default" == "y" ]]
+    return
+  fi
+  if [[ "$default" == "y" ]]; then
+    printf '%s [Y/n]: ' "$label" >/dev/tty
+  else
+    printf '%s [y/N]: ' "$label" >/dev/tty
+  fi
+  IFS= read -r answer </dev/tty
+  answer="${answer,,}"
+  [[ -z "$answer" ]] && answer="$default"
+  [[ "$answer" == "y" || "$answer" == "yes" || "$answer" == "д" || "$answer" == "да" ]]
+}
 
 require_ubuntu() {
   [[ -r /etc/os-release ]] || die "/etc/os-release not found"
@@ -178,22 +227,8 @@ print(f"{p.scheme}://{host}")
 PY
 }
 
-ensure_env() {
-  if [[ ! -f .env ]]; then
-    FRESH_ENV=1
-    log "generating .env and cryptographic secrets"
-    if [[ -n "${OTCLICK_OPENAI_API_KEY:-}" ]]; then
-      python3 infra/bootstrap.py --openai-key "$OTCLICK_OPENAI_API_KEY"
-    else
-      python3 infra/bootstrap.py
-    fi
-  else
-    log "preserving existing .env"
-  fi
-
-  env_set DISABLE_SIGNUP true
-
-  local existing_url public_url domain host_ip site_address
+configure_public_url() {
+  local existing_url public_url domain host_ip site_address default_url
   existing_url="$(env_get NEXT_PUBLIC_APP_URL)"
   public_url="${OTCLICK_PUBLIC_URL:-}"
   domain="${OTCLICK_DOMAIN:-}"
@@ -205,21 +240,21 @@ ensure_env() {
     public_url="https://$domain"
   fi
 
-  if [[ -z "$public_url" && "$FRESH_ENV" -eq 0 && -n "$existing_url" && "$existing_url" != "http://localhost" && "$existing_url" != "http://localhost:3000" ]]; then
-    public_url="$existing_url"
+  host_ip="${OTCLICK_HOST_IP:-$(hostname -I 2>/dev/null | tr ' ' '\n' | grep -m1 -E '^[0-9]+\.' || true)}"
+  [[ -n "$host_ip" ]] || host_ip="127.0.0.1"
+  default_url="http://$host_ip"
+  if [[ -n "$existing_url" && "$existing_url" != "http://localhost" && "$existing_url" != "http://localhost:3000" ]]; then
+    default_url="$existing_url"
   fi
 
   if [[ -z "$public_url" ]]; then
-    host_ip="${OTCLICK_HOST_IP:-$(hostname -I 2>/dev/null | tr ' ' '\n' | grep -m1 -E '^[0-9]+\.' || true)}"
-    [[ -n "$host_ip" ]] || host_ip="127.0.0.1"
-    public_url="http://$host_ip"
+    public_url="$(prompt_text 'URL приложения (https://domain или LAN http://IP)' "$default_url")"
   fi
-
   public_url="$(normalize_public_url "$public_url")"
   case "$public_url" in
     https://*) site_address="${public_url#https://}" ;;
     http://*) site_address=":80" ;;
-    *) die "OTCLICK_PUBLIC_URL must start with http:// or https://" ;;
+    *) die "public URL must start with http:// or https://" ;;
   esac
 
   env_set CADDY_SITE_ADDRESS "$site_address"
@@ -230,6 +265,146 @@ ensure_env() {
   env_set NEXT_PUBLIC_APP_URL "$public_url"
   env_set POLAR_SUCCESS_URL "$public_url/billing/success"
   log "public URL: $public_url"
+}
+
+configure_first_user() {
+  [[ "$FRESH_ENV" -eq 1 ]] || return 0
+  local email password password2
+  email="${OTCLICK_ADMIN_EMAIL:-}"
+  if [[ -z "$email" ]]; then
+    email="$(prompt_text 'Email для входа в Otclick' 'admin@otclick.local')"
+  fi
+  [[ "$email" == *@*.* ]] || die "admin email looks invalid: $email"
+  env_set OTCLICK_ADMIN_EMAIL "$email"
+
+  password="${OTCLICK_ADMIN_PASSWORD:-}"
+  if [[ -z "$password" && have_tty ]]; then
+    password="$(prompt_secret 'Пароль Otclick (Enter = сгенерировать безопасный)')"
+    if [[ -n "$password" ]]; then
+      [[ ${#password} -ge 10 ]] || die "application password must be at least 10 characters"
+      password2="$(prompt_secret 'Повтори пароль Otclick')"
+      [[ "$password" == "$password2" ]] || die "application passwords do not match"
+    fi
+  fi
+  if [[ -z "$password" ]]; then
+    password="$(python3 -c 'import secrets; print(secrets.token_urlsafe(18))')"
+    GENERATED_PASSWORD="$password"
+  fi
+  INSTALL_ADMIN_PASSWORD="$password"
+}
+
+configure_llm() {
+  local reconfigure="${OTCLICK_RECONFIGURE:-0}"
+  if [[ "$FRESH_ENV" -ne 1 && "$reconfigure" != "1" ]]; then
+    local existing_model existing_base
+    existing_model="$(env_get OPENAI_MODEL)"
+    existing_base="$(env_get OPENAI_BASE_URL)"
+    if [[ -n "$(env_get OPENAI_API_KEY)" ]]; then
+      LLM_VERIFY_STATUS="preserved: ${existing_model:-unknown} @ ${existing_base:-unknown}"
+    else
+      LLM_VERIFY_STATUS="disabled"
+    fi
+    return 0
+  fi
+
+  local key base model provider choice
+  key="${OTCLICK_OPENAI_API_KEY:-}"
+  base="${OTCLICK_OPENAI_BASE_URL:-}"
+  model="${OTCLICK_OPENAI_MODEL:-}"
+  provider="${OTCLICK_LLM_PROVIDER:-}"
+
+  if [[ -z "$base" || -z "$model" ]]; then
+    if ! have_tty; then
+      [[ -n "$base" && -n "$model" ]] || die "non-interactive install requires OTCLICK_OPENAI_BASE_URL and OTCLICK_OPENAI_MODEL, or OTCLICK_LLM_PROVIDER=disabled"
+    else
+      echo >/dev/tty
+      echo 'LLM provider:' >/dev/tty
+      echo '  1) OpenCode Go + LongCat 2.0 (default)' >/dev/tty
+      echo '  2) LongCat direct OpenAI-compatible API' >/dev/tty
+      echo '  3) Custom OpenAI-compatible endpoint' >/dev/tty
+      echo '  4) Disable AI for now' >/dev/tty
+      choice="$(prompt_text 'Выбор' '1')"
+      case "$choice" in
+        1)
+          provider="opencode-go"
+          base="https://opencode.ai/zen/go/v1"
+          model="longcat-2.0"
+          echo 'OpenCode Go is technically OpenAI-compatible; its documentation targets coding-agent traffic.' >/dev/tty
+          echo 'Otclick identifies itself honestly and does not impersonate a coding agent.' >/dev/tty
+          ;;
+        2)
+          provider="longcat-direct"
+          base="https://api.longcat.chat/openai/v1"
+          model="$(prompt_text 'LongCat model id' 'LongCat-2.0')"
+          ;;
+        3)
+          provider="custom"
+          base="$(prompt_text 'OpenAI-compatible base URL, including /v1' '')"
+          model="$(prompt_text 'Model id' '')"
+          [[ -n "$base" && -n "$model" ]] || die "base URL and model id are required"
+          ;;
+        4)
+          provider="disabled"
+          base="https://api.openai.com/v1"
+          model="gpt-5.4-nano"
+          key=""
+          ;;
+        *) die "unknown LLM provider choice: $choice" ;;
+      esac
+    fi
+  fi
+
+  if [[ "$provider" == "disabled" || "${OTCLICK_LLM_PROVIDER:-}" == "disabled" ]]; then
+    env_set OPENAI_API_KEY ""
+    env_set OPENAI_BASE_URL "${base:-https://api.openai.com/v1}"
+    env_set OPENAI_MODEL "${model:-gpt-5.4-nano}"
+    env_set OPENAI_STRUCTURED_OUTPUT_METHOD function_calling
+    LLM_VERIFY_STATUS="disabled by user"
+    return 0
+  fi
+
+  if [[ -z "$key" ]]; then
+    key="$(prompt_secret 'API key выбранного LLM provider')"
+  fi
+  [[ -n "$key" ]] || die "LLM API key is required unless AI is explicitly disabled"
+  base="${base%/}"
+  [[ "$base" == http://* || "$base" == https://* ]] || die "LLM base URL must start with http:// or https://"
+  [[ -n "$model" ]] || die "LLM model id is required"
+
+  env_set OPENAI_API_KEY "$key"
+  env_set OPENAI_BASE_URL "$base"
+  env_set OPENAI_MODEL "$model"
+  env_set OPENAI_STRUCTURED_OUTPUT_METHOD function_calling
+
+  log "verifying OpenAI-compatible chat + function calling: $model @ $base"
+  if python3 infra/verify_llm.py --env .env; then
+    LLM_VERIFY_STATUS="verified: $model @ $base"
+  else
+    LLM_VERIFY_STATUS="FAILED: $model @ $base"
+    if prompt_yes_no 'LLM compatibility check failed. Continue installation anyway?' n; then
+      log "warning: continuing with an unverified LLM endpoint"
+    else
+      die "LLM compatibility check failed; fix provider/base/model/key and rerun"
+    fi
+  fi
+}
+
+ensure_env() {
+  if [[ ! -f .env ]]; then
+    FRESH_ENV=1
+    log "generating .env and cryptographic secrets"
+    # Installer owns the interactive LLM questions; bootstrap only generates
+    # local cryptographic secrets here.
+    python3 infra/bootstrap.py --openai-key ""
+  else
+    log "preserving existing .env"
+  fi
+
+  env_set DISABLE_SIGNUP true
+  env_set ALLOW_REAL_APPLY false
+  configure_public_url
+  configure_first_user
+  configure_llm
 }
 
 wait_http() {
@@ -288,7 +463,7 @@ create_first_user() {
   local email password service_key payload response user_id
   email="${OTCLICK_ADMIN_EMAIL:-$(env_get OTCLICK_ADMIN_EMAIL)}"
   [[ -n "$email" ]] || email="admin@otclick.local"
-  password="${OTCLICK_ADMIN_PASSWORD:-}"
+  password="${OTCLICK_ADMIN_PASSWORD:-$INSTALL_ADMIN_PASSWORD}"
   if [[ -z "$password" ]]; then
     password="$(python3 -c 'import secrets; print(secrets.token_urlsafe(18))')"
     GENERATED_PASSWORD="$password"
@@ -308,7 +483,7 @@ PY
     --data "$payload" \
     'http://127.0.0.1:54321/auth/v1/admin/users')"
   user_id="$(python3 -c 'import json,sys; print(json.load(sys.stdin).get("id", ""))' <<<"$response")"
-  [[ -n "$user_id" ]] || die "GoTrue admin API did not return a user id"
+  [[ -n "$user_id" ]] || die "auth admin API did not return a user id"
   env_set OTCLICK_USER_ID "$user_id"
   env_set OTCLICK_ADMIN_EMAIL "$email"
 }
@@ -340,6 +515,62 @@ ensure_single_user() {
   docker compose exec -T api python scripts/load_candidate_data.py --user-id "$user_id"
 }
 
+check_candidate_profile() {
+  local report
+  report="$(python3 - "$INSTALL_DIR" <<'PY'
+import json
+from pathlib import Path
+import sys
+
+root = Path(sys.argv[1])
+profile_path = root / "backend/data/candidate/candidate_profile.json"
+facts_path = root / "backend/data/candidate/confirmed_facts.json"
+required = [
+    "target_roles", "next_role_priorities", "not_interested", "organization_level",
+    "industries", "business_scale", "compensation", "positioning",
+    "strong_role_signals", "weak_role_signals",
+]
+errors = []
+try:
+    profile = json.loads(profile_path.read_text(encoding="utf-8"))
+except Exception as exc:
+    profile = {}
+    errors.append(f"candidate_profile.json unreadable: {exc}")
+try:
+    facts_doc = json.loads(facts_path.read_text(encoding="utf-8"))
+except Exception as exc:
+    facts_doc = {}
+    errors.append(f"confirmed_facts.json unreadable: {exc}")
+
+missing = [key for key in required if not profile.get(key)]
+if missing:
+    errors.append("empty required profile sections: " + ", ".join(missing))
+facts = facts_doc.get("facts") if isinstance(facts_doc, dict) else None
+if not isinstance(facts, list) or not facts:
+    errors.append("confirmed_facts.json has no facts")
+    facts = []
+for i, fact in enumerate(facts, 1):
+    if not isinstance(fact, dict) or not fact.get("key") or not fact.get("statement"):
+        errors.append(f"fact #{i} requires key and statement")
+
+print("OK" if not errors else "ACTION_REQUIRED")
+print(len(facts))
+for err in errors:
+    print(err)
+PY
+)"
+  local state count
+  state="$(sed -n '1p' <<<"$report")"
+  count="$(sed -n '2p' <<<"$report")"
+  if [[ "$state" == "OK" ]]; then
+    PROFILE_STATUS="complete; $count confirmed facts loaded; no mandatory manual completion"
+  else
+    PROFILE_STATUS="ACTION REQUIRED; see files below"
+    log "candidate profile validation requires attention:"
+    sed -n '3,$p' <<<"$report" | sed 's/^/[otclick]   - /'
+  fi
+}
+
 start_stack() {
   log "validating docker compose configuration"
   docker compose config >/dev/null
@@ -351,11 +582,31 @@ start_stack() {
   wait_http http://127.0.0.1:54321/auth/v1/health Supabase-auth 90
 }
 
+print_profile_instructions() {
+  local user_id
+  user_id="$(env_get OTCLICK_USER_ID)"
+  echo
+  echo "Candidate profile: $PROFILE_STATUS"
+  echo "Files used by scorer / cover writer:"
+  echo "  $INSTALL_DIR/backend/data/candidate/candidate_profile.json"
+  echo "    Edit only when needed: target_roles, next_role_priorities, not_interested,"
+  echo "    organization_level, industries, business_scale, compensation, positioning,"
+  echo "    strong_role_signals, weak_role_signals and claim/positioning constraints."
+  echo "  $INSTALL_DIR/backend/data/candidate/confirmed_facts.json"
+  echo "    Add only confirmed facts. Each fact needs key + statement; keep metrics/tags"
+  echo "    and any claim guardrails precise. Do not add assumptions as confirmed facts."
+  echo "After editing either file, reload prepared candidate data with:"
+  echo "  cd $INSTALL_DIR && docker compose exec -T api python scripts/load_candidate_data.py --user-id '$user_id'"
+  echo "The current bundled profile is already curated; edit it only if the summary above says ACTION REQUIRED or you want to change your positioning/facts."
+}
+
 print_result() {
-  local public_url email current_sha
+  local public_url email current_sha model base
   public_url="$(env_get NEXT_PUBLIC_APP_URL)"
   email="$(env_get OTCLICK_ADMIN_EMAIL)"
   current_sha="$(git rev-parse HEAD)"
+  model="$(env_get OPENAI_MODEL)"
+  base="$(env_get OPENAI_BASE_URL)"
   echo
   echo "============================================================"
   echo "Otclick-hh installed/updated"
@@ -364,17 +615,23 @@ print_result() {
   if [[ -n "$GENERATED_PASSWORD" ]]; then
     echo "Password: $GENERATED_PASSWORD"
     echo "Save this password now; installer does not store it in .env."
+  elif [[ "$FRESH_ENV" -eq 1 ]]; then
+    echo "Password: the password you entered during installation"
   else
-    echo "Password: the value supplied in OTCLICK_ADMIN_PASSWORD / existing account password"
+    echo "Password: existing account password"
   fi
   echo "Revision: $current_sha"
+  echo "LLM:      $LLM_VERIFY_STATUS"
+  [[ -n "$model" ]] && echo "Model:    $model"
+  [[ -n "$base" ]] && echo "LLM URL:  $base"
   echo "Real HH submit: DISABLED by default (ALLOW_REAL_APPLY=false)"
   echo "Log:      $LOG_FILE"
   [[ -n "$BACKUP_FILE" ]] && echo "Backup:   $BACKUP_FILE"
   if [[ "$public_url" == http://* && "$public_url" != "http://localhost" && "$public_url" != "http://127.0.0.1" ]]; then
-    echo "WARNING: remote HTTP is suitable only for temporary testing. Set OTCLICK_DOMAIN and rerun for Caddy HTTPS."
+    echo "WARNING: remote HTTP is suitable only for temporary/LAN testing. Rerun with OTCLICK_RECONFIGURE=1 and a https:// domain for Internet exposure."
   fi
   echo "============================================================"
+  print_profile_instructions
 }
 
 main() {
@@ -384,6 +641,7 @@ main() {
   ensure_env
   start_stack
   ensure_single_user
+  check_candidate_profile
   print_result
 }
 
