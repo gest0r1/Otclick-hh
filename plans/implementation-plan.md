@@ -95,6 +95,9 @@ Draft PR: `#1`
 - [x] Backend preview + CRUD `/api/search-sources`.
 - [x] URL change сбрасывает cursor.
 - [x] Mobile `/vacancies/sources`: preview/save/enable-disable/delete/status/error.
+- [x] Manual `/api/search-sources/run-now`: discovery + scoring без sender.
+- [x] Mobile `/vacancies/run`: ручной запуск и summary discovery/scoring.
+- [x] Повторный manual click во время активного manual run -> 409.
 
 ## 3.2 Incremental discovery
 
@@ -162,7 +165,7 @@ Manual Search URL остаётся гарантированным fallback.
 - [x] Full vacancy + score explanation + pros/risks/unknowns/confidence.
 - [x] Lifecycle tabs.
 - [x] Candidate context page в том же разделе.
-- [ ] Bulk select — после первого ручного прогона, чтобы сначала проверить card workflow.
+- [ ] Bulk select из review — после первого ручного прогона.
 - [ ] Desktop table mode — только если card mode окажется неудобным.
 
 ---
@@ -194,27 +197,28 @@ Manual Search URL остаётся гарантированным fallback.
 - [x] HH tests/forms -> manual_required, без auto-answer submit.
 - [x] Uncertain submit -> HH reconciliation before failure.
 - [x] Нет blind retry.
-- [x] Нет employer-wide blacklist из одного ответа.
 - [x] `039_send_runtime_control.sql`: durable batches + per-user control + DB lease.
 - [x] Resume создаёт snapshot batch только из уже queued jobs.
-- [x] Вакансии, queued после Resume, ждут следующий batch.
+- [x] Jobs, queued после Resume, ждут следующий batch.
 - [x] DB lease ограничивает sender одним процессом на user/HH account.
 - [x] Sender выбирает job только текущего active batch.
-- [x] Lease освобождается после каждого outcome; stale lease в UI не считается active после expiry.
-- [x] Pause сохраняет текущий batch.
+- [x] Lease освобождается после каждого outcome; stale lease после expiry не считается active.
+- [x] Pause сохраняет batch.
 - [x] Stop-after-current ждёт только реально `sending` job, иначе сразу pause.
 - [x] Progress: N/M/current + queued/sent/failed/manual/cancelled.
-- [x] Configurable safety interval 0–300 sec, default 10.
-- [x] Mobile `/vacancies/send`: runtime state, progress, interval, Resume/Pause/Stop-after-current.
-- [x] `runtime_wired=false` явно виден в UI; control-state можно тестировать без real send.
-- [x] Failed/manual_required reset: job -> cancelled, vacancy -> approved; **никакого автоматического retry**.
+- [x] Safety interval 0–300 sec, default 10.
+- [x] Mobile `/vacancies/send`: state/progress/interval/Resume/Pause/Stop-after-current.
+- [x] `runtime_wired=false` явно виден в UI.
+- [x] Failed/manual_required reset: job -> cancelled, vacancy -> approved; автоматического retry нет.
 - [x] Mobile список failed/manual jobs + `вернуть в approved`.
-- [x] Unit tests для kill-switch/lease/batch/progress/pause/resume/stop/reset.
+- [x] Bulk `/api/send-queue/bulk` только для уже individually approved vacancies.
+- [x] Mobile `/vacancies/bulk`: checkboxes + bulk queue; batch operation не делает approval.
+- [x] Unit tests: kill-switch/lease/batch/progress/pause/resume/stop/reset/bulk.
 - [x] Engine **не подключён к `worker_main`**.
 
 Перед реальной активацией:
 - [ ] Full integration/restart test на PostgreSQL/Supabase stack.
-- [ ] Bulk queue/send after bulk select.
+- [ ] Bulk select из review + последующий индивидуальный cover approval.
 - [ ] Ограниченный live send test на явно выбранной вакансии.
 - [ ] Отдельное решение пользователя на включение sender в `worker_main`.
 
@@ -306,7 +310,7 @@ OTCLICK_DOMAIN=jobs.example.com sudo -E bash /tmp/otclick-install.sh
 
 # 12. Калибровка 20–30 вакансий
 
-- [ ] Проверить реальные Search URL sources.
+- [ ] Проверить реальные Search URL sources через `/vacancies/run`.
 - [ ] Снять filled `/applicant/autosearch.xml` contract и закончить autosearch import.
 - [ ] Hard-filter precision.
 - [ ] Score vs фактические решения пользователя.
@@ -334,10 +338,9 @@ OTCLICK_DOMAIN=jobs.example.com sudo -E bash /tmp/otclick-install.sh
 
 ## Ближайший порядок работ
 
-1. Подготовить bulk review/queue UX, не активируя sender.
-2. Получить выполняющийся CI или эквивалентный full local build/test baseline.
-3. Проверить installer на чистой Ubuntu 24.04 и повторный update с backup/migrations.
-4. Подготовить первую ручную калибровку mobile workflow без real sends.
-5. Когда пользователь сможет проверить HH аккаунт — снять filled `/applicant/autosearch.xml` contract и закончить web-session autosearch import.
-6. После 20–30 вакансий откалибровать rules/scorer/cover prompts.
-7. Sender activation и auto mode — только по отдельному решению пользователя.
+1. Получить выполняющийся CI или эквивалентный full local build/test baseline.
+2. Проверить installer на чистой Ubuntu 24.04 и повторный update с backup/migrations.
+3. Начать первую ручную калибровку через Search URL + `/vacancies/run`, без real sends.
+4. Когда пользователь сможет проверить HH аккаунт — снять filled `/applicant/autosearch.xml` contract и закончить web-session autosearch import.
+5. После 20–30 вакансий откалибровать rules/scorer/cover prompts и решить, нужен ли bulk select из review.
+6. Sender activation и auto mode — только по отдельному решению пользователя.
