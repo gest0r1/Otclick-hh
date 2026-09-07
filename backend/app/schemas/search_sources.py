@@ -58,3 +58,8 @@ class SearchSourceResponse(BaseModel):
     last_error: str | None = None
     created_at: datetime | None = None
     updated_at: datetime | None = None
+
+
+class ManualSearchRunResponse(BaseModel):
+    discovery: dict[str, int]
+    scoring: dict[str, int]
