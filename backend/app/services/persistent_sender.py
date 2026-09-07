@@ -82,14 +82,13 @@ def _increment_attempt(user_id: str, job_id: str, attempts: int) -> None:
     }).eq("id", job_id).eq("user_id", user_id).eq("status", "sending").execute()
 
 
-async def _move_pipeline(user_id: str, pipeline_id: str, from_status: str, to_status: str, changes: dict | None = None) -> bool:
+async def _move_pipeline(user_id: str, pipeline_id: str, from_status: str, to_status: str) -> bool:
     return await asyncio.to_thread(
         vacancy_pipeline.transition,
         user_id=user_id,
         pipeline_id=pipeline_id,
         from_statuses=[from_status],
         to_status=to_status,
-        changes=changes,
     )
 
 
@@ -131,13 +130,7 @@ async def process_next(user_id: str) -> dict[str, str | bool | None]:
     if not pipeline or not _snapshot_matches(job, pipeline):
         await asyncio.to_thread(_finish_job, user_id, job_id, "failed", "approval_snapshot_mismatch")
         if pipeline and pipeline.get("status") == "queued_to_send":
-            await _move_pipeline(
-                user_id,
-                pipeline_id,
-                "queued_to_send",
-                "send_error",
-                {"score_explanation": "send blocked: approval_snapshot_mismatch"},
-            )
+            await _move_pipeline(user_id, pipeline_id, "queued_to_send", "send_error")
         return {"processed": True, "outcome": "approval_snapshot_mismatch", "job_id": job_id}
 
     try:
