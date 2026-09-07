@@ -2,15 +2,11 @@
 FROM node:22-slim AS base
 WORKDIR /app
 
-# NEXT_PUBLIC_* vars are inlined at build time
-ARG NEXT_PUBLIC_SUPABASE_URL
-ARG NEXT_PUBLIC_SUPABASE_ANON_KEY
-ARG NEXT_PUBLIC_API_URL
-ARG NEXT_PUBLIC_GOOGLE_AUTH_ENABLED
-ENV NEXT_PUBLIC_SUPABASE_URL=$NEXT_PUBLIC_SUPABASE_URL \
-    NEXT_PUBLIC_SUPABASE_ANON_KEY=$NEXT_PUBLIC_SUPABASE_ANON_KEY \
-    NEXT_PUBLIC_API_URL=$NEXT_PUBLIC_API_URL \
-    NEXT_PUBLIC_GOOGLE_AUTH_ENABLED=$NEXT_PUBLIC_GOOGLE_AUTH_ENABLED
+# The production image is intentionally install-agnostic. Supabase URL/key and
+# API origin are supplied at runtime: server-side through container env and
+# browser-side through same-origin + a public config cookie set by proxy.ts.
+# Google auth remains disabled in the single-user prebuilt image by default.
+ENV NEXT_PUBLIC_GOOGLE_AUTH_ENABLED=false
 
 COPY package.json package-lock.json ./
 RUN npm ci
