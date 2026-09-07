@@ -43,6 +43,8 @@ type Vacancy = {
   user_decision_reason: string | null;
   cover_letter_draft: string | null;
   cover_letter_meta: Record<string, unknown>;
+  approved_letter_hash?: string | null;
+  approved_at?: string | null;
   sources: VacancySource[];
 };
 
@@ -54,7 +56,7 @@ type Tab = {
 
 const TABS: Tab[] = [
   { id: "review", label: "к разбору", statuses: ["discovered", "scoring", "scored", "review", "score_error"] },
-  { id: "selected", label: "выбраны", statuses: ["selected", "letter_draft", "approved"] },
+  { id: "selected", label: "выбраны", statuses: ["selected", "letter_draft", "approved", "queued_to_send"] },
   { id: "hold", label: "отложены", statuses: ["hold"] },
   { id: "rejected", label: "отклонены", statuses: ["rejected_by_user"] },
   { id: "archived", label: "архив", statuses: ["archived"] },
@@ -69,6 +71,7 @@ const STATUS_LABEL: Record<string, { label: string; tone: "neutral" | "ok" | "wa
   selected: { label: "выбрана", tone: "ok" },
   letter_draft: { label: "письмо", tone: "ok" },
   approved: { label: "одобрена", tone: "ok" },
+  queued_to_send: { label: "в очереди", tone: "yellow" },
   hold: { label: "отложена", tone: "warn" },
   rejected_by_user: { label: "отклонена", tone: "coral" },
   archived: { label: "архив", tone: "neutral" },
@@ -185,7 +188,7 @@ export default function VacanciesPage() {
           <div>
             <div className={styles.title}>Вакансии</div>
             <div style={{ fontSize: 12, color: "var(--muted)", marginTop: 3 }}>
-              discovery → оценка → ручной выбор → черновик. Отправки отсюда нет.
+              discovery → оценка → выбор → письмо → approval → очередь. Реальная отправка отключена.
             </div>
           </div>
           <div className={styles.spacer} />
@@ -227,7 +230,7 @@ export default function VacanciesPage() {
             const open = openId === vacancy.id;
             const salary = salaryText(vacancy.salary);
             const busy = busyId === vacancy.id;
-            const selectedLike = ["selected", "letter_draft", "approved"].includes(vacancy.status);
+            const selectedLike = ["selected", "letter_draft", "approved", "queued_to_send"].includes(vacancy.status);
             const reviewableSelected = ["selected", "letter_draft"].includes(vacancy.status);
             const finalLike = ["approved", "archived", "sending", "sent", "queued_to_send"].includes(vacancy.status);
 
@@ -307,6 +310,8 @@ export default function VacanciesPage() {
                                 status: next.status,
                                 cover_letter_draft: next.cover_letter_draft,
                                 cover_letter_meta: next.cover_letter_meta,
+                                approved_letter_hash: next.approved_letter_hash,
+                                approved_at: next.approved_at,
                               }
                             : row,
                         ),
