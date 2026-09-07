@@ -9,7 +9,7 @@ from app.schemas.vacancies import (
     VacancyEnrichmentResponse,
     VacancyPipelineResponse,
 )
-from app.services import pipeline_cover_letters, vacancy_review_service
+from app.services import pipeline_cover_letters, send_queue_service, vacancy_review_service
 
 
 router = APIRouter(prefix="/api/vacancies", tags=["vacancies"])
@@ -84,4 +84,13 @@ async def update_cover_letter(
     user_id: str = Depends(get_current_user),
 ):
     row = await pipeline_cover_letters.save_draft(user_id, pipeline_id, body.text)
+    return VacancyPipelineResponse(**row)
+
+
+@router.post("/{pipeline_id}/cover-letter/approve", response_model=VacancyPipelineResponse)
+async def approve_cover_letter(
+    pipeline_id: str,
+    user_id: str = Depends(get_current_user),
+):
+    row = await send_queue_service.approve_letter(user_id, pipeline_id)
     return VacancyPipelineResponse(**row)
