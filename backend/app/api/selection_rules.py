@@ -4,12 +4,14 @@ from fastapi import APIRouter, Depends, Query
 
 from app.api.deps import get_current_user
 from app.schemas.selection_rules import (
+    RuleActiveUpdate,
     RuleProposalResolutionResponse,
     RuleProposalResolve,
     RuleProposalResponse,
+    RuleRescoreResponse,
     SelectionRuleResponse,
 )
-from app.services import selection_rules
+from app.services import selection_rule_actions, selection_rules
 
 
 router = APIRouter(prefix="/api/selection-rules", tags=["selection-rules"])
@@ -47,6 +49,26 @@ async def resolve_proposal(
         proposal=RuleProposalResponse(**result["proposal"]),
         rule=SelectionRuleResponse(**result["rule"]) if result.get("rule") else None,
     )
+
+
+@router.post("/{rule_id}/rescore-impact", response_model=RuleRescoreResponse)
+async def rescore_impact(
+    rule_id: str,
+    user_id: str = Depends(get_current_user),
+):
+    return RuleRescoreResponse(
+        **(await selection_rule_actions.requeue_impact_for_rescore(user_id, rule_id))
+    )
+
+
+@router.patch("/{rule_id}", response_model=SelectionRuleResponse)
+async def set_rule_active(
+    rule_id: str,
+    body: RuleActiveUpdate,
+    user_id: str = Depends(get_current_user),
+):
+    row = await selection_rule_actions.set_active(user_id, rule_id, body.active)
+    return SelectionRuleResponse(**row)
 
 
 @router.get("", response_model=list[SelectionRuleResponse])
