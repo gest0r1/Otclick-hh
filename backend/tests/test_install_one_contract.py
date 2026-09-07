@@ -13,7 +13,7 @@ def test_one_command_installer_preserves_existing_docker_stack():
     assert 'docker compose version >/dev/null 2>&1' in wrapper
     assert 'existing Docker + Compose detected; package stack left untouched' in wrapper
     assert 'apt-get install -y git curl ca-certificates python3 docker.io' in wrapper  # old block matched for replacement
-    assert 'apt-get install -y git curl ca-certificates python3 unzip zstd >>"$LOG_FILE" 2>&1' in wrapper
+    assert 'apt-get install -y git curl ca-certificates python3 zstd >>"$LOG_FILE" 2>&1' in wrapper
 
 
 def test_one_command_installer_keeps_docker_package_families_separate():
@@ -37,18 +37,17 @@ def test_one_command_installer_hides_noisy_package_and_docker_progress():
     assert 'trap - ERR' in wrapper
 
 
-def test_one_command_installer_uses_exact_sha_github_artifact_by_default():
+def test_one_command_installer_uses_exact_sha_public_prerelease_by_default():
     wrapper = _wrapper()
 
     assert 'git_sha="$(git rev-parse HEAD)"' in wrapper
-    assert 'artifact_name="otclick-linux-amd64-${git_sha}"' in wrapper
-    assert 'https://api.github.com/repos/gest0r1/Otclick-hh/actions/artifacts?name=${artifact_name}' in wrapper
-    assert 'run.get("head_sha") != sha' in wrapper
-    assert 'artifact.get("expired")' in wrapper
-    assert 'artifact.get("digest", "")' in wrapper
-    assert 'sha256sum "$artifact_zip"' in wrapper
-    assert 'manifest.get("git_sha") != expected_sha' in wrapper
-    assert 'unzip -p "$artifact_zip" "$bundle_member" | zstd -d -c | docker load' in wrapper
+    assert 'release_tag="install-${git_sha}"' in wrapper
+    assert 'https://github.com/gest0r1/Otclick-hh/releases/download/${release_tag}' in wrapper
+    assert '"${release_base}/manifest.json"' in wrapper
+    assert '"${release_base}/SHA256SUMS"' in wrapper
+    assert 'manifest.get("git_sha", "")' in wrapper
+    assert 'sha256sum "$bundle_file"' in wrapper
+    assert 'zstd -d -c "$bundle_file" | docker load' in wrapper
 
 
 def test_one_command_installer_does_not_build_locally_unless_explicitly_overridden():
@@ -58,6 +57,7 @@ def test_one_command_installer_does_not_build_locally_unless_explicitly_overridd
     assert '[7/8] emergency local build enabled' in wrapper
     assert 'Local build is intentionally disabled on low-memory hosts.' in wrapper
     assert 'Emergency override: OTCLICK_ALLOW_LOCAL_BUILD=1' in wrapper
+    assert '[7/8] downloading prebuilt Otclick images (~1 GiB, no local build)' in wrapper
 
 
 def test_one_command_installer_never_pulls_local_backend_as_external_image():
