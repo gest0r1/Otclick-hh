@@ -1,8 +1,7 @@
 """Exact-text approval and durable send queue for the new vacancy funnel.
 
-This module only persists approval/queue state. It NEVER calls HH and there is
-no consumer for application_send_queue yet. Real submission remains a separate
-worker and is additionally protected by ALLOW_REAL_APPLY.
+This module only persists approval/queue state. It NEVER calls HH. Real
+submission remains a separate sender and is protected by ALLOW_REAL_APPLY.
 """
 
 from __future__ import annotations
@@ -18,7 +17,7 @@ from app.services import vacancy_pipeline, vacancy_review_service
 
 _QUEUE_COLUMNS = (
     "id,vacancy_pipeline_id,resume_id,hh_vacancy_id,approved_letter_hash,"
-    "status,attempts,last_error,queued_at,started_at,finished_at,created_at,updated_at"
+    "batch_id,status,attempts,last_error,queued_at,started_at,finished_at,created_at,updated_at"
 )
 
 
@@ -77,7 +76,8 @@ async def queue_approved(user_id: str, pipeline_id: str) -> dict:
 
     Idempotent for an already queued job. A previously cancelled job can be
     re-queued only while the vacancy still has a valid approval for the same
-    exact draft.
+    exact draft. Requeue always clears any old batch identity so it can only be
+    picked up by a future Resume snapshot.
     """
     vacancy = await vacancy_review_service.get_vacancy(user_id, pipeline_id)
     existing = await asyncio.to_thread(_queue_row, user_id, pipeline_id)
@@ -104,6 +104,7 @@ async def queue_approved(user_id: str, pipeline_id: str) -> dict:
         "hh_vacancy_id": vacancy["hh_vacancy_id"],
         "approved_letter_hash": approved_hash,
         "approved_letter_text": text,
+        "batch_id": None,
         "status": "queued",
         "attempts": 0,
         "last_error": None,
