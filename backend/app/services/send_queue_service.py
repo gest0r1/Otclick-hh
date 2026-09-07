@@ -183,6 +183,70 @@ async def cancel_queued(user_id: str, pipeline_id: str) -> dict:
     return res.data[0]
 
 
+async def reset_failed(user_id: str, pipeline_id: str) -> dict:
+    """Return a failed/manual job to the explicit approval step without retrying.
+
+    This is deliberately a reset, not an automatic retry. The queue row becomes
+    cancelled and the vacancy returns from send_error to approved. The user may
+    then fix HH connectivity or edit/reapprove the letter before queueing again.
+    Archived vacancies are not resettable.
+    """
+    vacancy = await vacancy_review_service.get_vacancy(user_id, pipeline_id)
+    existing = await asyncio.to_thread(_queue_row, user_id, pipeline_id)
+    if not existing:
+        raise HTTPException(status_code=404, detail="send job not found")
+
+    if existing.get("status") == "cancelled" and vacancy.get("status") == "approved":
+        return existing
+    if existing.get("status") not in {"failed", "manual_required"}:
+        raise HTTPException(status_code=409, detail=f"send job {existing.get('status')} is not resettable")
+    if vacancy.get("status") != "send_error":
+        raise HTTPException(status_code=409, detail=f"vacancy {vacancy.get('status')} is not resettable")
+
+    draft = str(vacancy.get("cover_letter_draft") or "").strip()
+    approved_hash = str(vacancy.get("approved_letter_hash") or "")
+    if not draft or not approved_hash or letter_hash(draft) != approved_hash:
+        raise HTTPException(status_code=409, detail="approved text changed; regenerate or approve again")
+    if str(existing.get("approved_letter_hash") or "") != approved_hash:
+        raise HTTPException(status_code=409, detail="queue approval snapshot no longer matches vacancy")
+
+    previous_status = str(existing["status"])
+    now = vacancy_pipeline._now()
+    res = (
+        service_client.table("application_send_queue")
+        .update({
+            "status": "cancelled",
+            "last_error": f"reset_from:{previous_status}",
+            "finished_at": now,
+            "updated_at": now,
+        })
+        .eq("id", existing["id"])
+        .eq("user_id", user_id)
+        .eq("status", previous_status)
+        .execute()
+    )
+    if not (res and res.data):
+        raise HTTPException(status_code=409, detail="send job changed concurrently")
+
+    changed = await asyncio.to_thread(
+        vacancy_pipeline.transition,
+        user_id=user_id,
+        pipeline_id=pipeline_id,
+        from_statuses=["send_error"],
+        to_status="approved",
+    )
+    if not changed:
+        # No HH action can happen from either failed/manual_required state. Best
+        # effort rollback keeps the queue and pipeline consistent for inspection.
+        service_client.table("application_send_queue").update({
+            "status": previous_status,
+            "last_error": existing.get("last_error"),
+            "updated_at": vacancy_pipeline._now(),
+        }).eq("id", existing["id"]).eq("user_id", user_id).eq("status", "cancelled").execute()
+        raise HTTPException(status_code=409, detail="vacancy changed concurrently")
+    return res.data[0]
+
+
 async def list_queue(user_id: str, *, statuses: list[str] | None = None, limit: int = 100) -> list[dict]:
     allowed = {"queued", "sending", "sent", "failed", "manual_required", "cancelled"}
     unknown = [s for s in (statuses or []) if s not in allowed]
