@@ -12,6 +12,7 @@ type Tab = "profile" | "integrations" | "danger";
 
 type HHStatus = {
   connected: boolean;
+  has_api_token: boolean;
   expires_at: string | null;
   last_refreshed_at: string | null;
   hh_user_id: string | null;
@@ -225,15 +226,18 @@ export default function AccountPage() {
                 marginBottom: 16,
               }}
             >
+              <Row k="сессия" v={hhConnected ? "web-session / cookies" : "—"} />
               <Row k="hh user_id" v={hh?.hh_user_id ?? "—"} />
               <Row
-                k="токен"
+                k="API token"
                 v={
-                  hh?.expires_at ? `до ${new Date(hh.expires_at).toLocaleString("ru-RU")}` : "—"
+                  hh?.has_api_token && hh.expires_at
+                    ? `до ${new Date(hh.expires_at).toLocaleString("ru-RU")}`
+                    : "не используется"
                 }
               />
               <Row
-                k="последнее обновление"
+                k="последнее подключение"
                 v={
                   hh?.last_refreshed_at
                     ? new Date(hh.last_refreshed_at).toLocaleString("ru-RU")
@@ -244,11 +248,13 @@ export default function AccountPage() {
             <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
               {hhConnected ? (
                 <>
-                  <Btn kind="yellow" size="sm" icon={<IRefresh size={14} />} onClick={refreshHH}>
-                    refresh token
-                  </Btn>
+                  {hh?.has_api_token && (
+                    <Btn kind="yellow" size="sm" icon={<IRefresh size={14} />} onClick={refreshHH}>
+                      refresh API token
+                    </Btn>
+                  )}
                   <LinkBtn href="/onboarding" kind="ghostDark" size="sm" icon={<ILink size={14} />}>
-                    переподключить
+                    переподключить web-session
                   </LinkBtn>
                   <Btn kind="ghostDark" size="sm" icon={<IPower size={14} />} onClick={disconnectHH}>
                     отключить
@@ -298,7 +304,7 @@ export default function AccountPage() {
             />
             <DangerRow
               title="Удалить аккаунт"
-              sub="навсегда удалит данные, отклики, токены hh"
+              sub="навсегда удалит данные, отклики, web-session hh"
               btnLabel="Удалить"
               tone="err"
               disabled
