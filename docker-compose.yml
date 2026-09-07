@@ -248,7 +248,7 @@ services:
       frontend:
         condition: service_started
     environment:
-      CADDY_SITE_ADDRESS: ${CADDY_SITE_ADDRESS:-http://localhost}
+      CADDY_SITE_ADDRESS: "${CADDY_SITE_ADDRESS:-:80}"
     ports:
       - "80:80"
       - "443:443"
