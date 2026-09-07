@@ -43,6 +43,15 @@ async def list_all(
     return [SendQueueItem(**row) for row in rows]
 
 
+@router.post("/{pipeline_id}/reset", response_model=SendQueueItem)
+async def reset_failed(
+    pipeline_id: str,
+    user_id: str = Depends(get_current_user),
+):
+    row = await send_queue_service.reset_failed(user_id, pipeline_id)
+    return SendQueueItem(**row)
+
+
 @router.post("/{pipeline_id}", response_model=SendQueueItem)
 async def queue_one(
     pipeline_id: str,
