@@ -12,11 +12,14 @@
 - [x] Ветка разработки: `feature/persistent-vacancy-funnel`.
 - [x] `0b5ad962` — persistent Search Sources + vacancy funnel schema + URL parser.
 - [x] `fe1df614` — `ALLOW_REAL_APPLY=false` + общий backend kill-switch.
-- [x] `2e081036` — уточнён план реализации и стратегия источников.
 - [x] `96efa7b9` — Search Source API + incremental discovery + разрыв discovery/legacy apply runner.
 - [x] `b9b380a6` — curated candidate profile + 22 confirmed facts + claim guardrails + loader.
 - [x] `c11bf100..9c3bda67` — backend `Vacancies` backlog/review API + full HH vacancy web-session enrichment + review/parser tests.
-- [ ] CI baseline: draft PR создан, но GitHub Actions пока не создаёт workflow run (`check_runs=0`); это нужно отдельно восстановить/проверить.
+- [x] `24d6a92b..da2f40b8` — structured hard filter/scoring + worker orchestration + fail-closed tests.
+- [x] `b9d416d2..e9ca831a` — mobile `Vacancies`, Search Sources UI, cover-letter draft/edit/approval/queue controls.
+- [x] `8eaa6e54..30a98abb` — exact-text approval + persistent `application_send_queue` + queue safety tests.
+- [x] `88af7619..12974177` — persistent sender engine + reconciliation/safety tests; **engine не подключён к `worker_main`**.
+- [ ] CI baseline: workflow расширен на `feature/**` и frontend build (`550ca803`), но GitHub по-прежнему создаёт `0 workflow_runs`; production-ready состояние не заявлять до восстановления CI/локального полного прогона.
 
 > После каждого законченного блока отмечать `[x]` и добавлять commit SHA. Не считать задачу завершённой только потому, что схема или helper уже существуют: acceptance отмечается после подключения runtime/UI и тестов.
 
@@ -24,7 +27,7 @@
 
 ## Целевая архитектура
 
-`HH Search Sources -> PostgreSQL vacancy_pipeline -> hard filter -> LLM score -> mobile review -> selected -> personalized draft -> approval -> persistent send queue -> sequential HH submit -> verification -> applications log`
+`HH Search Sources -> PostgreSQL vacancy_pipeline -> hard filter -> LLM score -> mobile review -> selected -> personalized draft -> exact-text approval -> persistent send queue -> sequential HH submit -> verification -> applications log`
 
 Принцип: **discovery/scoring физически отделены от send**. Старый сценарий `нашёл -> ApplyJob -> apply_one` не является целевым путём.
 
@@ -38,10 +41,12 @@
 - [x] `submit_prepared_form` проходит через тот же kill-switch.
 - [x] Unit tests подтверждают: при disabled gate HH session не открывается.
 - [x] `worker_main` больше не запускает legacy auto-apply runner из `worker_enabled`; runtime передаёт ему `want_apply=False`.
-- [ ] End-to-end test: без approved send-job реальная отправка невозможна.
+- [x] Persistent sender при `ALLOW_REAL_APPLY=false` возвращается **до чтения send queue, HH cookies или любых HH-запросов**.
+- [x] Очередь можно наполнить/отменить, но sender engine не импортируется и не запускается `worker_main`.
+- [x] Текст отправки связан SHA-256 hash с точным одобренным draft; изменение текста сбрасывает approval.
 - [ ] Полный backend/frontend/build CI baseline.
 
-**Acceptance:** discovery/review можно запускать без риска случайного реального отклика.
+**Acceptance:** discovery/review/scoring/draft/approval/queue можно запускать без риска случайного реального отклика.
 
 ---
 
@@ -56,13 +61,13 @@
 - [x] Зафиксированы актуальные target scale/industries/org level/compensation из source.
 - [x] Подготовлены 22 подтверждённых facts/cases в `confirmed_facts.json`.
 - [x] Пункты `нужно уточнить` не импортированы как достижения.
-- [x] Claim guardrails сохранены отдельно и будут передаваться scorer/writer.
+- [x] Claim guardrails сохранены отдельно.
 - [x] Миграция `035_candidate_context.sql`: `candidate_profiles` + `candidate_facts`.
 - [x] Deterministic loader `backend/scripts/load_candidate_data.py`.
-- [x] Удалённые из prepared data факты при повторной загрузке деактивируются, а не остаются скрыто активными.
-- [ ] API/UI просмотра реально используемых profile/facts.
-- [ ] Подключить profile/facts в scorer.
-- [ ] Подключить релевантные facts/guardrails в cover writer.
+- [x] Удалённые из prepared data факты при повторной загрузке деактивируются.
+- [x] Profile/facts/guardrails подключены в structured scorer.
+- [x] Relevant confirmed facts/guardrails подключены в cover writer; использованные `fact_key` сохраняются в `cover_letter_meta`.
+- [ ] API/UI просмотра и ручной корректировки реально используемых profile/facts.
 
 **Решение:** универсального Markdown parser в runtime нет и не будет.
 
@@ -82,7 +87,7 @@
 - [x] Read-only full vacancy enrichment через web-session/cookies сохраняет `description` в pipeline.
 - [x] Backend API чтения backlog и одной вакансии с источниками.
 - [x] Backend review actions: выбрать / отклонить с причиной / отложить / вернуть в review.
-- [ ] Подключить enrichment автоматически непосредственно перед hard filter/scoring.
+- [x] Enrichment автоматически выполняется непосредственно перед hard filter/scoring.
 - [ ] Удалить/заархивировать старый `vacancy_producer.py` и in-memory queue после переноса оставшихся зависимостей.
 - [ ] Restart/recovery integration tests с реальной БД.
 
@@ -102,7 +107,7 @@
 - [x] Backend endpoint preview URL перед сохранением.
 - [x] Backend CRUD `/api/search-sources`.
 - [x] Изменение URL сбрасывает старый cursor.
-- [ ] Mobile UI: вставить URL -> preview -> сохранить/edit/enable-disable.
+- [x] Mobile UI `/vacancies/sources`: вставить URL -> preview -> сохранить -> enable/disable/delete + last run/error.
 
 ## 3.2 Incremental ingestion
 
@@ -135,7 +140,7 @@
 - [ ] Повторный импорт: изменённые criteria сбрасывают cursor; неизменённые сохраняют его.
 - [ ] Sync не удаляет локальный source автоматически, если автопоиск исчез в HH — помечает origin missing и оставляет решение пользователю.
 - [ ] После импорта выполнять ingestion собственным Search Source + cursor; HH `new_count` только справочный.
-- [ ] Manual Search URL остаётся гарантированным fallback и не блокирует MVP.
+- [x] Manual Search URL остаётся гарантированным fallback и не блокирует MVP.
 
 ## 3.4 HH recommendations
 
@@ -152,16 +157,17 @@
 
 # Этап 4. Hard filter + LLM scoring
 
-- [ ] Hard rules: stop words, explicit excluded companies, подтверждённые excluded industry/business types.
-- [ ] Каждое hard rejection хранит конкретную reason.
-- [ ] Unknown industry/revenue/salary не является automatic reject.
-- [ ] Scorer получает full vacancy + structured candidate profile.
-- [ ] Score 0–100.
-- [ ] Компоненты: role fit / scale / transformation mandate / industry-business context.
-- [ ] Сохранять pros / risks / unknowns / confidence.
-- [ ] Различать CIO transformation vs operations IT head; CTO/platform vs lead developer; standalone business vs holding function.
-- [ ] LLM failure -> `score_error`, не fail-open.
-- [ ] Низкий score остаётся видимым.
+- [x] Консервативный hard filter для явных role mismatches; неоднозначные роли идут в LLM.
+- [x] Каждое hard rejection хранит конкретную reason.
+- [x] Unknown industry/revenue/salary не является automatic reject.
+- [x] Scorer получает full vacancy + structured candidate profile/facts.
+- [x] Score 0–100.
+- [x] Компоненты: role fit / scale / transformation mandate / industry-business context.
+- [x] Сохраняются pros / risks / unknowns / confidence.
+- [x] Prompt различает CIO transformation vs operations IT head; CTO/platform vs lead developer; standalone business vs holding function.
+- [x] LLM failure -> `score_error`, не fail-open.
+- [x] Низкий score остаётся видимым в backlog/UI.
+- [ ] Пользовательские stop words / explicit excluded companies / approved learned hard rules — этап накопления правил.
 
 ---
 
@@ -172,51 +178,59 @@
 - [x] Backend действия: Выбрать / Отклонить / Отложить / Вернуть в review.
 - [x] Отклонение требует `user_decision_reason`; terminal/send states обычным review action не двигаются.
 - [x] Read-only `/api/vacancies/{id}/enrich` догружает full description через HH web-session.
-- [ ] Отдельная страница `Vacancies`, не `Applications`.
-- [ ] Desktop table + mobile cards.
-- [ ] Company / role / salary / score / sources / status.
-- [ ] Full description + score explanation.
-- [ ] UI: Выбрать / Отклонить / Отложить.
-- [ ] UI rejection reason.
+- [x] Отдельная страница `Vacancies`, не `Applications`.
+- [x] Mobile cards; desktop использует тот же responsive card view.
+- [x] Company / role / salary / score / sources / status.
+- [x] Full description + score explanation + pros/risks/unknowns/confidence.
+- [x] UI: Выбрать / Отклонить / Отложить / Вернуть.
+- [x] UI rejection reason.
+- [x] Lifecycle tabs.
 - [ ] Bulk select.
-- [ ] Lifecycle filters.
+- [ ] При необходимости добавить отдельный desktop table mode после мобильной калибровки.
 
 ---
 
 # Этап 6. Сопроводительные письма
 
-- [ ] Адаптировать проверенные принципы `hh-auto`.
-- [ ] Письмо для каждой selected vacancy, даже если HH формально не требует letter.
-- [ ] Контекст: selected HH resume + relevant confirmed facts + guardrails + full vacancy + scoring anchors.
-- [ ] Writer не получает numeric score как аргумент убеждения.
-- [ ] 500–750 символов, язык вакансии, ближайший релевантный кейс, 1–2 evidence, employer/role-specific close.
-- [ ] Только подтверждённые факты; никаких придуманных/округлённых метрик.
-- [ ] Persist draft + mobile edit.
-- [ ] Approve связывается с hash точного текста.
-- [ ] Edit after approval -> обратно draft.
-- [ ] LLM failure не создаёт auto-sendable fallback.
+- [x] Адаптированы принципы `hh-auto`, без его Playwright/delay runtime.
+- [x] Письмо генерируется для каждой selected vacancy, даже если HH формально не требует letter.
+- [x] Контекст: selected HH resume + relevant confirmed facts + guardrails + full vacancy + scoring anchors.
+- [x] Writer не получает numeric score как аргумент убеждения.
+- [x] 500–750 символов, язык вакансии, ближайший релевантный кейс, 1–2 evidence, employer/role-specific close.
+- [x] Только подтверждённые факты; `fact_key` сохраняются в metadata.
+- [x] Persist draft + mobile edit/regenerate.
+- [x] Approval связывается SHA-256 с точным сохранённым текстом.
+- [x] Edit after approval -> обратно `letter_draft`, approval/hash очищаются.
+- [x] После постановки активного send-job редактирование блокируется.
+- [x] LLM failure не создаёт auto-sendable fallback.
 
 ---
 
 # Этап 7. Persistent send queue
 
-- [ ] Отдельная `application_send_queue`, не `asyncio.Queue`.
-- [ ] Только approved vacancy/letter может быть queued.
-- [ ] Bulk `Отправить выбранные`.
-- [ ] Один submit одновременно на HH account.
-- [ ] Pre-submit: vacancy alive + already responded reconciliation.
-- [ ] Network uncertainty -> сначала сверка HH, потом retry.
-- [ ] Unique/idempotency vacancy+resume.
-- [ ] Не blacklist работодателя целиком из-за одного старого отклика.
-- [ ] Forms/unknown required fields -> manual review.
-- [ ] Configurable safety interval; без обязательных 15–25 секунд `hh-auto`.
-- [ ] Progress N/M + current/error/manual + Pause/Resume/Stop-after-current.
+- [x] `037_send_queue.sql`: отдельная `application_send_queue`, не `asyncio.Queue`.
+- [x] Только approved vacancy с совпадающим exact-text hash может быть queued.
+- [x] В queue хранится snapshot точного одобренного текста и resume/vacancy identity.
+- [x] Queue per vacancy idempotent; cancelled job можно безопасно requeue.
+- [x] UI: `одобрить текст -> поставить в очередь -> отменить очередь`.
+- [x] Pre-submit engine проверяет approval snapshot, vacancy alive, archived, already responded.
+- [x] Already responded на HH -> reconciliation `sent`, повторный submit не выполняется.
+- [x] Network uncertainty/rejected submit -> сначала повторная сверка HH, затем fail; автоматического blind retry нет.
+- [x] Forms/tests -> `manual_required`; persistent sender их не заполняет и не отправляет автоматически.
+- [x] Новый sender не использует employer-wide auto-blacklist из legacy `apply_one`.
+- [x] Safety tests: disabled flag -> ни queue read, ни HH access; mismatch -> no submit; exact text -> exact submit argument.
+- [x] Sender engine **не подключён** к `worker_main`; реальный runtime submit не активирован.
+- [ ] Перед активацией: гарантировать один submit одновременно на HH account (worker-level lock/DB lease).
+- [ ] Перед активацией: runtime Pause/Resume/Stop-after-current + progress N/M/current/error/manual.
+- [ ] Перед активацией: configurable safety interval.
+- [ ] Bulk `Отправить выбранные` после bulk select.
+- [ ] Отдельный retry/reset flow для `failed/manual_required` после ручного решения.
 
 ---
 
 # Этап 8. Накопление правил
 
-- [ ] Сохранять user rejection reason.
+- [x] Сохраняется `user_decision_reason` для ручных отказов.
 - [ ] LLM предлагает rule/change/no-generalization, но не активирует его.
 - [ ] До approval показать влияние proposed rule на backlog.
 - [ ] Version rules + selective rescore.
@@ -279,11 +293,10 @@ curl -fsSL https://raw.githubusercontent.com/gest0r1/Otclick-hh/main/install.sh 
 
 ## Следующий порядок работ
 
-1. Подключить full vacancy enrichment автоматически перед hard filter/scoring.
-2. Реализовать Hard filter + structured LLM scorer на prepared candidate profile.
-3. Mobile `Vacancies` review.
-4. Cover writer/draft/approval.
-5. Persistent send queue.
-6. Rules learning / cache versioning / installer / calibration.
-7. Отдельно восстановить CI PR checks; отсутствие CI не блокирует проектирование, но блокирует утверждение production-ready состояния.
-8. Через 3–4 цикла разработки проверить web-session автопоиски на живом аккаунте и зафиксировать заполненный контракт.
+1. Не активируя sender: довести persistent queue до retry/reset/progress semantics и single-account lock design.
+2. Реализовать накопление правил из `user_decision_reason` с обязательным approval и impact preview.
+3. Versioned score/cover context fingerprints и selective rescore/regenerate.
+4. `install.sh` + безопасный update/backup/migrations/healthcheck.
+5. Отдельно восстановить CI: workflow есть и trigger расширен, но GitHub возвращает `0 workflow_runs` даже на `feature/**` push.
+6. Через несколько циклов/при готовности пользователя проверить web-session автопоиски на живом аккаунте и зафиксировать заполненный `/applicant/autosearch.xml` contract.
+7. Только после отдельного решения пользователя — подключать sender engine к runtime и тестировать реальные HH sends.
