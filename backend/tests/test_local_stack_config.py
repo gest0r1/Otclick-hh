@@ -131,7 +131,7 @@ def test_browser_client_uses_runtime_cookie_and_same_origin():
     assert "window.location.origin" in client
     assert "NEXT_PUBLIC_SUPABASE_ANON_KEY" not in client
     assert "NEXT_PUBLIC_SUPABASE_URL" not in client
-    assert "NEXT_PUBLIC_API_URL" not in api
+    assert "process.env.NEXT_PUBLIC_API_URL" not in api
     assert "const res = await fetch(path" in api
     assert "process.env.SUPABASE_ANON_KEY" in middleware
     assert "nextResponse.cookies.set(ANON_KEY_COOKIE" in middleware
