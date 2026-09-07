@@ -21,7 +21,7 @@ _VACANCY_COLUMNS = (
     "id,resume_id,hh_vacancy_id,vacancy_url,title,employer_id,employer_name,"
     "area_name,salary,published_at,discovered_at,last_seen_at,description,status,"
     "score,score_details,score_explanation,hard_filter_reason,user_decision_reason,"
-    "cover_letter_draft,approved_at,created_at,updated_at"
+    "cover_letter_draft,cover_letter_meta,approved_at,created_at,updated_at"
 )
 
 _DECISION_TARGET = {
