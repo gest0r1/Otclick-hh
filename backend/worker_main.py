@@ -34,13 +34,17 @@ logger = logging.getLogger("worker_main")
 POLL_INTERVAL_S = 15
 DISCOVERY_INTERVAL_S = 5 * 60
 _next_discovery_at: dict[str, float] = {}
+# Keep a private clock reference rather than patching the stdlib `time` module in
+# tests. Patching `time.monotonic` globally also changes asyncio's event-loop
+# clock and can break fixture teardown in Python 3.13.
+_monotonic = time.monotonic
 
 
 async def _run_discovery_if_due(user_id: str, enabled: bool) -> None:
     if not enabled:
         _next_discovery_at.pop(user_id, None)
         return
-    now = time.monotonic()
+    now = _monotonic()
     if now < _next_discovery_at.get(user_id, 0.0):
         return
     # Set the next slot before starting. If this run fails, we still avoid a
