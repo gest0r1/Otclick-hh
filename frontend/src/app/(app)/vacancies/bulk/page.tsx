@@ -1,8 +1,8 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useState } from "react";
-import { apiFetch } from "@/lib/api";
 import { Btn, Card, EmptyState, Tag } from "@/components/otclick/ui";
+import { apiFetch } from "@/lib/api";
+import { useCallback, useEffect, useMemo, useState } from "react";
 
 type Vacancy = {
   id: string;
@@ -135,6 +135,7 @@ export default function BulkQueuePage() {
       ) : rows.length === 0 ? (
         <Card>
           <EmptyState
+            icon={<span aria-hidden>✓</span>}
             title="Нет approved вакансий"
             description="Сначала выберите вакансию, проверьте письмо и отдельно одобрите точный текст."
           />
