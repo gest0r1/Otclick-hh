@@ -1,4 +1,4 @@
-{$CADDY_SITE_ADDRESS:http://localhost} {
+{$CADDY_SITE_ADDRESS::80} {
   encode zstd gzip
 
   # FastAPI lives under /api/*; expose /health for installer/runtime checks.
