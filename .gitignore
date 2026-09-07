@@ -9,10 +9,10 @@ wheels/
 # Virtual environments
 .venv
 
-# Env vars
+# Env vars / installer state
 .env
 .env.local
-
+backups/
 
 # Sub Repos
 hh-applicant-tool/
