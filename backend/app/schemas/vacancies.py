@@ -32,6 +32,7 @@ class VacancyPipelineResponse(BaseModel):
     hard_filter_reason: str | None = None
     user_decision_reason: str | None = None
     cover_letter_draft: str | None = None
+    cover_letter_meta: dict[str, Any] = Field(default_factory=dict)
     approved_at: str | None = None
     created_at: str
     updated_at: str
@@ -49,6 +50,18 @@ class VacancyDecisionRequest(BaseModel):
             return None
         value = value.strip()
         return value or None
+
+
+class CoverLetterDraftUpdate(BaseModel):
+    text: str = Field(min_length=1, max_length=4000)
+
+    @field_validator("text")
+    @classmethod
+    def normalise_text(cls, value: str) -> str:
+        value = value.strip()
+        if not value:
+            raise ValueError("cover letter draft cannot be empty")
+        return value
 
 
 class VacancyEnrichmentResponse(BaseModel):
