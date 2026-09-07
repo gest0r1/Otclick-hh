@@ -21,6 +21,8 @@ on:
 permissions:
   contents: read
 
+# Distribution/diagnostic artifact: prebuilt app images plus exact installer and
+# compose metadata for this commit. Runtime secrets and .env are never included.
 concurrency:
   group: install-artifact-${{ github.ref }}
   cancel-in-progress: true
