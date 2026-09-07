@@ -1,8 +1,8 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
-import { apiFetch } from "@/lib/api";
 import { Btn, Card, EmptyState, Tag } from "@/components/otclick/ui";
+import { apiFetch } from "@/lib/api";
+import { useCallback, useEffect, useState } from "react";
 
 type SendJob = {
   id: string;
@@ -66,7 +66,11 @@ export default function SendProblems() {
         <div style={{ marginTop: 14, fontSize: 13, color: "var(--muted)" }}>Загрузка…</div>
       ) : rows.length === 0 ? (
         <div style={{ marginTop: 14 }}>
-          <EmptyState title="Нет failed/manual jobs" description="Проблемные отправки появятся здесь." />
+          <EmptyState
+            icon={<span aria-hidden>✓</span>}
+            title="Нет failed/manual jobs"
+            description="Проблемные отправки появятся здесь."
+          />
         </div>
       ) : (
         <div style={{ display: "flex", flexDirection: "column", gap: 10, marginTop: 14 }}>
