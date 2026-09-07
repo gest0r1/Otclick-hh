@@ -1,8 +1,8 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
-import { apiFetch } from "@/lib/api";
 import { Btn, Card, EmptyState, Tag } from "@/components/otclick/ui";
+import { apiFetch } from "@/lib/api";
+import { useCallback, useEffect, useState } from "react";
 
 type SourceStats = {
   runs?: number;
@@ -268,7 +268,11 @@ export default function SourceStatsPage() {
         <Card><div style={{ fontSize: 13, color: "var(--muted)" }}>Загрузка…</div></Card>
       ) : rows.length === 0 ? (
         <Card>
-          <EmptyState title="Нет источников" description="Сначала добавьте Search URL в разделе Источники." />
+          <EmptyState
+            icon={<span aria-hidden>∅</span>}
+            title="Нет источников"
+            description="Сначала добавьте Search URL в разделе Источники."
+          />
         </Card>
       ) : (
         rows.map((row) => {
