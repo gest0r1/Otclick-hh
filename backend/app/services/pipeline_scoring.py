@@ -19,6 +19,7 @@ from app.config import settings
 from app.db.supabase import service_client
 from app.services import (
     candidate_context_service,
+    context_fingerprints,
     selection_rules,
     vacancy_pipeline,
     vacancy_review_service,
@@ -27,6 +28,7 @@ from app.services import (
 logger = logging.getLogger(__name__)
 
 MAX_SCORE_PER_RUN = 15
+SCORER_PROMPT_VERSION = 1
 
 
 class ScoreComponents(BaseModel):
@@ -258,6 +260,13 @@ async def score_one(
         if enrichment_state["archived"]:
             return "archived"
 
+        score_fp = context_fingerprints.score_context(
+            context=context,
+            rules=rules,
+            vacancy=vacancy,
+            model=settings.OPENAI_MODEL,
+            prompt_version=SCORER_PROMPT_VERSION,
+        )
         matched_rules = _matching_rules(vacancy, rules)
         reason = hard_filter_reason(vacancy, matched_rules)
         applied_versions = [
@@ -279,6 +288,7 @@ async def score_one(
                         "hard_filter": True,
                         "profile_version": context.get("version"),
                         "applied_rule_versions": applied_versions,
+                        **score_fp,
                     },
                     "score_explanation": f"Hard filter: {reason}",
                 },
@@ -296,6 +306,7 @@ async def score_one(
             "model": settings.OPENAI_MODEL,
             "applied_rule_versions": applied_versions,
             "applied_rule_ids": [str(rule.get("id")) for rule in matched_rules if rule.get("id")],
+            **score_fp,
         }
         changed = await asyncio.to_thread(
             vacancy_pipeline.transition,
