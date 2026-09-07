@@ -24,9 +24,6 @@ from app.services.vacancy_pipeline import persist_discovered
 
 logger = logging.getLogger(__name__)
 
-# Initial import is intentionally narrow. Later runs walk until they overlap the
-# previous head page. For a single-user CIO/CDTO search this avoids repeatedly
-# paging through a large historical result set.
 INITIAL_SCAN_PAGES = 3
 INCREMENTAL_MAX_PAGES = 20
 
@@ -67,11 +64,7 @@ def _update_source(source_id: str, **changes) -> None:
 
 
 def _request_pairs(source: dict, page: int) -> list[tuple[str, str]]:
-    """Preserve duplicate HH query keys exactly as stored.
-
-    Pagination and ordering are runtime concerns, so stale values copied from a
-    browser URL are removed and replaced here.
-    """
+    """Preserve duplicate HH query keys exactly as stored."""
     pairs: list[tuple[str, str]] = []
     for item in source.get("query_pairs") or []:
         key = str((item or {}).get("key") or "")
@@ -83,8 +76,44 @@ def _request_pairs(source: dict, page: int) -> list[tuple[str, str]]:
     return pairs
 
 
+def _cursor_stats(
+    cursor: dict,
+    *,
+    fetched: int,
+    persisted: int,
+    skipped_applied: int,
+    error: bool,
+) -> dict[str, int]:
+    previous = cursor.get("stats") or {}
+    return {
+        "runs": int(previous.get("runs") or 0) + 1,
+        "fetched": int(previous.get("fetched") or 0) + fetched,
+        "persisted": int(previous.get("persisted") or 0) + persisted,
+        "skipped_applied": int(previous.get("skipped_applied") or 0) + skipped_applied,
+        "errors": int(previous.get("errors") or 0) + (1 if error else 0),
+    }
+
+
+def _failure_cursor(cursor: dict, checked_at: str, error: str) -> dict:
+    next_cursor = dict(cursor)
+    next_cursor["stats"] = _cursor_stats(
+        cursor,
+        fetched=0,
+        persisted=0,
+        skipped_applied=0,
+        error=True,
+    )
+    next_cursor["last_run"] = {
+        "checked_at": checked_at,
+        "fetched": 0,
+        "persisted": 0,
+        "skipped_applied": 0,
+        "error": error[:1000],
+    }
+    return next_cursor
+
+
 async def _search_page(user_id: str, source: dict, page: int) -> tuple[list[dict], int]:
-    """Search through the logged-in HH web session with duplicate query keys."""
     session = await load_web_session(user_id)
     url = f"{web.SEARCH_URL}?{urlencode(_request_pairs(source, page))}"
     resp = await asyncio.to_thread(web._get, session, user_id, url)
@@ -99,7 +128,6 @@ async def _search_page(user_id: str, source: dict, page: int) -> tuple[list[dict
 
 
 async def discover_source(user_id: str, source: dict) -> dict[str, int | bool]:
-    """Ingest one source until the previous head is reached or the scan cap hits."""
     source_id = str(source["id"])
     cursor = source.get("cursor") or {}
     previous_head = {str(v) for v in (cursor.get("head_ids") or []) if v}
@@ -152,24 +180,48 @@ async def discover_source(user_id: str, source: dict) -> dict[str, int | bool]:
                 break
     except WebSessionExpired as ex:
         await report_dead_session(user_id, ex)
-        await asyncio.to_thread(_update_source, source_id, last_error=str(ex))
+        message = str(ex)
+        await asyncio.to_thread(
+            _update_source,
+            source_id,
+            cursor=_failure_cursor(cursor, checked_at, message),
+            last_error=message[:1000],
+        )
         raise
     except Exception as ex:
-        await asyncio.to_thread(_update_source, source_id, last_error=str(ex)[:1000])
+        message = str(ex)
+        await asyncio.to_thread(
+            _update_source,
+            source_id,
+            cursor=_failure_cursor(cursor, checked_at, message),
+            last_error=message[:1000],
+        )
         raise
 
-    # First import establishes a boundary by design. Incremental scans should
-    # normally find the previous head. If the result stream changed so much that
-    # 20 pages contain no overlap, persist what we saw but surface the condition.
     warning = None
     if not initial and not overlap_found:
         warning = "cursor_overlap_not_found_within_scan_limit"
 
     new_cursor = {
-        "version": 1,
+        "version": 2,
         "head_ids": first_page_ids,
         "checked_at": checked_at,
         "overlap_found": overlap_found,
+        "stats": _cursor_stats(
+            cursor,
+            fetched=fetched,
+            persisted=persisted,
+            skipped_applied=skipped_applied,
+            error=False,
+        ),
+        "last_run": {
+            "checked_at": checked_at,
+            "fetched": fetched,
+            "persisted": persisted,
+            "skipped_applied": skipped_applied,
+            "overlap_found": overlap_found,
+            "error": warning,
+        },
     }
     await asyncio.to_thread(
         _update_source,
@@ -187,7 +239,6 @@ async def discover_source(user_id: str, source: dict) -> dict[str, int | bool]:
 
 
 async def discover_user(user_id: str) -> dict[str, int]:
-    """Run discovery for every enabled persistent source of one user."""
     sources = await asyncio.to_thread(_load_enabled_sources, user_id)
     summary = {"sources": len(sources), "fetched": 0, "persisted": 0, "errors": 0}
     for source in sources:
@@ -195,7 +246,7 @@ async def discover_user(user_id: str) -> dict[str, int]:
             result = await discover_source(user_id, source)
         except WebSessionExpired:
             summary["errors"] += 1
-            break  # all sources share the same dead HH session
+            break
         except Exception:
             summary["errors"] += 1
             logger.exception("discovery failed user=%s source=%s", user_id, source.get("id"))
