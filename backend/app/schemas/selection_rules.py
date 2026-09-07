@@ -9,6 +9,10 @@ class RuleProposalResolve(BaseModel):
     approve: bool
 
 
+class RuleActiveUpdate(BaseModel):
+    active: bool
+
+
 class RuleProposalResponse(BaseModel):
     id: str
     source_vacancy_id: str | None = None
@@ -39,3 +43,11 @@ class SelectionRuleResponse(BaseModel):
 class RuleProposalResolutionResponse(BaseModel):
     proposal: RuleProposalResponse
     rule: SelectionRuleResponse | None = None
+
+
+class RuleRescoreResponse(BaseModel):
+    rule_id: str
+    rule_version: int
+    matched_rescorable: int
+    queued_for_rescore: int
+    protected_statuses_unchanged: list[str]
