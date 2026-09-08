@@ -88,6 +88,15 @@ def test_installer_starts_infra_then_forces_current_app_images():
     assert 'without bouncing DB' in wrapper
 
 
+def test_candidate_overrides_stay_private_but_readable_by_container_user():
+    wrapper = _wrapper()
+
+    assert 'chown 1000:1000 "$CANDIDATE_LOCAL_DIR"' in wrapper
+    assert 'chmod 700 "$CANDIDATE_LOCAL_DIR"' in wrapper
+    assert 'chmod 600 "$CANDIDATE_LOCAL_DIR/candidate_profile.json"' in wrapper
+    assert 'backend/Dockerfile runs the API/worker as uid:gid 1000:1000' in wrapper
+
+
 def test_candidate_reload_uses_runtime_mount_without_building_images():
     wrapper = _wrapper()
 
