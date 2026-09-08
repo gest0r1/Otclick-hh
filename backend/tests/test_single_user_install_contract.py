@@ -50,6 +50,18 @@ def test_caddy_keeps_browser_on_one_origin():
     assert "/storage/*" in caddy
 
 
+def test_next_proxy_is_registered_next_to_src_app():
+    src_proxy = ROOT / "frontend/src/proxy.ts"
+    root_proxy = ROOT / "frontend/proxy.ts"
+
+    assert src_proxy.is_file()
+    assert not root_proxy.exists()
+    proxy = src_proxy.read_text(encoding="utf-8")
+    assert 'updateSession(request)' in proxy
+    assert 'export async function proxy' in proxy
+    assert 'matcher:' in proxy
+
+
 def test_backend_image_contains_prepared_candidate_loader():
     dockerfile = _read("backend/Dockerfile")
     dockerignore = _read(".dockerignore")
