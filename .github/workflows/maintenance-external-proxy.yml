@@ -1,0 +1,89 @@
+name: One-shot external proxy installer patch
+
+on:
+  push:
+    branches:
+      - "feature/persistent-vacancy-funnel"
+    paths:
+      - ".github/workflows/maintenance-external-proxy.yml"
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout feature branch
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+        with:
+          ref: feature/persistent-vacancy-funnel
+
+      - name: Patch compose and installer
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+
+          def replace_once(path_s: str, old: str, new: str) -> None:
+              path = Path(path_s)
+              text = path.read_text(encoding="utf-8")
+              if text.count(old) != 1:
+                  raise SystemExit(f"{path}: expected one match, got {text.count(old)} for {old!r}")
+              path.write_text(text.replace(old, new, 1), encoding="utf-8")
+
+          replace_once(
+              "docker-compose.yml",
+              '''    ports:\n      - "80:80"\n      - "443:443"\n      - "443:443/udp"\n''',
+              '''    ports:\n      # Direct mode uses 80/443. When another reverse proxy already owns those\n      # host ports, the installer switches these bindings to loopback 18080/18443.\n      - "${CADDY_HTTP_BIND:-80}:80"\n      - "${CADDY_HTTPS_BIND:-443}:443"\n      - "${CADDY_HTTPS_BIND:-443}:443/udp"\n''',
+          )
+
+          installer = Path("install-one.sh")
+          text = installer.read_text(encoding="utf-8")
+
+          marker = '''compose_or_diagnose() {\n  if ! docker compose "$@" >>"$LOG_FILE" 2>&1; then\n    echo "[otclick] docker compose command failed: docker compose $*" >&2\n    diagnose_stack\n    return 1\n  fi\n}\n\nstart_stack() {\n'''
+          replacement = '''compose_or_diagnose() {\n  if ! docker compose "$@" >>"$LOG_FILE" 2>&1; then\n    echo "[otclick] docker compose command failed: docker compose $*" >&2\n    diagnose_stack\n    return 1\n  fi\n}\n\nforeign_public_proxy() {\n  docker ps --format '{{.Names}}\\t{{.Ports}}' 2>/dev/null \\\n    | grep -Ev '^aiautoclicker-caddy[[:space:]]' \\\n    | grep -Eq '(^|,|[[:space:]])(0\\.0\\.0\\.0:|\\[::\\]:)?(80|443)->'\n}\n\nconfigure_proxy_mode() {\n  local explicit_mode mode public_url\n  explicit_mode="${OTCLICK_PROXY_MODE:-}"\n  mode="${explicit_mode:-$(env_get OTCLICK_PROXY_MODE)}"\n  public_url="$(env_get NEXT_PUBLIC_APP_URL)"\n\n  if [[ -z "$mode" || "$mode" == "auto" ]]; then\n    if foreign_public_proxy; then\n      mode="external"\n    else\n      mode="direct"\n    fi\n  fi\n\n  case "$mode" in\n    direct)\n      env_set OTCLICK_PROXY_MODE direct\n      env_set CADDY_HTTP_BIND "80"\n      env_set CADDY_HTTPS_BIND "443"\n      # configure_public_url already selected :80 for plain HTTP or the public\n      # hostname for Caddy-managed HTTPS. Do not override CADDY_SITE_ADDRESS.\n      log "      proxy mode: direct Caddy on host 80/443"\n      ;;\n    external)\n      env_set OTCLICK_PROXY_MODE external\n      env_set CADDY_HTTP_BIND "127.0.0.1:${OTCLICK_INTERNAL_HTTP_PORT:-18080}"\n      env_set CADDY_HTTPS_BIND "127.0.0.1:${OTCLICK_INTERNAL_HTTPS_PORT:-18443}"\n      # Existing OpenResty/Nginx terminates public HTTP(S); internal Caddy only\n      # needs plain HTTP and keeps all Otclick path routing in one place.\n      env_set CADDY_SITE_ADDRESS ":80"\n      log "      proxy mode: external reverse proxy detected on host 80/443"\n      log "      Otclick upstream: http://127.0.0.1:${OTCLICK_INTERNAL_HTTP_PORT:-18080}"\n      log "      configure ${public_url:-the Otclick domain} in the existing proxy -> this upstream"\n      ;;\n    *)\n      echo "[otclick] invalid OTCLICK_PROXY_MODE=$mode (expected auto/direct/external)" >&2\n      return 25\n      ;;\n  esac\n}\n\nstart_stack() {\n'''
+          if text.count(marker) != 1:
+              raise SystemExit("install-one.sh: compose/start marker changed")
+          text = text.replace(marker, replacement, 1)
+
+          old = '''start_stack() {\n  log "[5/8] validating Docker Compose configuration"\n  docker compose config >/dev/null\n'''
+          new = '''start_stack() {\n  configure_proxy_mode\n  log "[5/8] validating Docker Compose configuration"\n  docker compose config >/dev/null\n'''
+          if text.count(old) != 1:
+              raise SystemExit("install-one.sh: start_stack header changed")
+          text = text.replace(old, new, 1)
+
+          old = '''  log "      ensuring caddy is running without forced recreation"\n  compose_or_diagnose up -d --no-build --pull never --no-deps caddy\n}\n'''
+          new = '''  log "      ensuring caddy is running without forced recreation"\n  compose_or_diagnose up -d --no-build --pull never --no-deps caddy\n\n  if [[ "$(env_get OTCLICK_PROXY_MODE)" == "external" ]]; then\n    wait_http "http://127.0.0.1:${OTCLICK_INTERNAL_HTTP_PORT:-18080}/health" internal-Caddy 60\n    log "      external proxy action required: proxy the public Otclick host to http://127.0.0.1:${OTCLICK_INTERNAL_HTTP_PORT:-18080}"\n  fi\n}\n'''
+          if text.count(old) != 1:
+              raise SystemExit("install-one.sh: caddy tail changed")
+          text = text.replace(old, new, 1)
+          installer.write_text(text, encoding="utf-8")
+
+          tests = Path("backend/tests/test_install_one_contract.py")
+          t = tests.read_text(encoding="utf-8")
+          t += '''\n\ndef test_installer_auto_switches_to_external_proxy_when_80_443_are_owned_elsewhere():\n    wrapper = _wrapper()\n\n    assert "foreign_public_proxy()" in wrapper\n    assert "OTCLICK_PROXY_MODE external" in wrapper\n    assert 'CADDY_HTTP_BIND "127.0.0.1:${OTCLICK_INTERNAL_HTTP_PORT:-18080}"' in wrapper\n    assert 'CADDY_HTTPS_BIND "127.0.0.1:${OTCLICK_INTERNAL_HTTPS_PORT:-18443}"' in wrapper\n    assert 'env_set CADDY_SITE_ADDRESS ":80"' in wrapper\n    assert "external reverse proxy detected on host 80/443" in wrapper\n    assert "external proxy action required" in wrapper\n\n\ndef test_compose_caddy_host_bindings_are_runtime_configurable():\n    compose = (ROOT / "docker-compose.yml").read_text(encoding="utf-8")\n\n    assert '${CADDY_HTTP_BIND:-80}:80' in compose\n    assert '${CADDY_HTTPS_BIND:-443}:443' in compose\n'''
+          tests.write_text(t, encoding="utf-8")
+          PY
+
+      - name: Validate focused installer contracts
+        uses: astral-sh/setup-uv@d4b2f3b6ecc6e67c4457f6d3e41ec42d3d0fcb86 # v5
+
+      - name: Run checks
+        run: |
+          set -euo pipefail
+          bash -n install-one.sh
+          python3 infra/bootstrap.py --openai-key ci-placeholder
+          docker compose config >/dev/null
+          uv sync --dev
+          uv run pytest -q backend/tests/test_install_one_contract.py backend/tests/test_local_stack_config.py
+          uv run ruff check backend/tests/test_install_one_contract.py backend/tests/test_local_stack_config.py
+
+      - name: Commit validated patch
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add install-one.sh docker-compose.yml backend/tests/test_install_one_contract.py
+          git commit -m "fix: support existing external reverse proxy"
+          git push origin HEAD:feature/persistent-vacancy-funnel
