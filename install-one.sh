@@ -201,7 +201,7 @@ PYMAN
 }
 
 diagnose_stack() {
-  local service id state health exit_code
+  local service id state health exit_code state_error
   echo >&2
   echo "[otclick] compose status:" >&2
   docker compose ps -a >&2 || true
@@ -214,13 +214,14 @@ diagnose_stack() {
     state="$(docker inspect -f '{{.State.Status}}' "$id" 2>/dev/null || true)"
     exit_code="$(docker inspect -f '{{.State.ExitCode}}' "$id" 2>/dev/null || true)"
     health="$(docker inspect -f '{{if .State.Health}}{{.State.Health.Status}}{{end}}' "$id" 2>/dev/null || true)"
+    state_error="$(docker inspect -f '{{.State.Error}}' "$id" 2>/dev/null || true)"
 
     if [[ "$state" != "running" || "$health" == "unhealthy" ]]; then
       if [[ "$state" == "exited" && "$exit_code" == "0" && ( "$service" == "migrate" || "$service" == "storage-init" ) ]]; then
         continue
       fi
       echo >&2
-      echo "[otclick] --- ${service}: state=${state:-unknown} exit=${exit_code:-?} health=${health:-n/a} ---" >&2
+      echo "[otclick] --- ${service}: state=${state:-unknown} exit=${exit_code:-?} health=${health:-n/a} error=${state_error:-none} ---" >&2
       docker compose logs --no-color --tail=120 "$service" >&2 || true
     fi
   done
@@ -262,8 +263,13 @@ start_stack() {
   wait_http http://127.0.0.1:8000/health backend 90
   wait_http http://127.0.0.1:3000 frontend 90
 
-  log "      recreating worker/caddy"
-  compose_or_diagnose up -d --no-build --pull never --force-recreate --no-deps worker caddy
+  log "      recreating worker from current backend image"
+  compose_or_diagnose up -d --no-build --pull never --force-recreate --no-deps worker
+
+  # Caddy contains no application code. Keep an already-running proxy stable
+  # across app image updates; on fresh/recovery installs this simply starts it.
+  log "      ensuring caddy reverse proxy is running"
+  compose_or_diagnose up -d --no-build --pull never --no-deps caddy
 }
 ''',
 "stack-start",
