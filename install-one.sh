@@ -80,6 +80,49 @@ replace_once(
 )
 
 replace_once(
+'''ensure_candidate_files() {
+  local source_dir="$INSTALL_DIR/backend/data/candidate"
+  mkdir -p "$CANDIDATE_LOCAL_DIR"
+  chmod 700 "$CANDIDATE_LOCAL_DIR"
+  if [[ ! -f "$CANDIDATE_LOCAL_DIR/candidate_profile.json" ]]; then
+    cp "$source_dir/candidate_profile.json" "$CANDIDATE_LOCAL_DIR/candidate_profile.json"
+    chmod 600 "$CANDIDATE_LOCAL_DIR/candidate_profile.json"
+    log "created local candidate profile override"
+  fi
+  if [[ ! -f "$CANDIDATE_LOCAL_DIR/confirmed_facts.json" ]]; then
+    cp "$source_dir/confirmed_facts.json" "$CANDIDATE_LOCAL_DIR/confirmed_facts.json"
+    chmod 600 "$CANDIDATE_LOCAL_DIR/confirmed_facts.json"
+    log "created local confirmed-facts override"
+  fi
+}
+''',
+'''ensure_candidate_files() {
+  local source_dir="$INSTALL_DIR/backend/data/candidate"
+  mkdir -p "$CANDIDATE_LOCAL_DIR"
+  if [[ ! -f "$CANDIDATE_LOCAL_DIR/candidate_profile.json" ]]; then
+    cp "$source_dir/candidate_profile.json" "$CANDIDATE_LOCAL_DIR/candidate_profile.json"
+    log "created local candidate profile override"
+  fi
+  if [[ ! -f "$CANDIDATE_LOCAL_DIR/confirmed_facts.json" ]]; then
+    cp "$source_dir/confirmed_facts.json" "$CANDIDATE_LOCAL_DIR/confirmed_facts.json"
+    log "created local confirmed-facts override"
+  fi
+
+  # backend/Dockerfile runs the API/worker as uid:gid 1000:1000. Keep the host
+  # override private while ensuring that non-root container user can read the
+  # read-only bind mount. Reapply on every install/update to repair older roots.
+  chown 1000:1000 "$CANDIDATE_LOCAL_DIR" \
+    "$CANDIDATE_LOCAL_DIR/candidate_profile.json" \
+    "$CANDIDATE_LOCAL_DIR/confirmed_facts.json"
+  chmod 700 "$CANDIDATE_LOCAL_DIR"
+  chmod 600 "$CANDIDATE_LOCAL_DIR/candidate_profile.json" \
+    "$CANDIDATE_LOCAL_DIR/confirmed_facts.json"
+}
+''',
+"candidate-files",
+)
+
+replace_once(
 '''start_stack() {
   log "validating docker compose configuration"
   docker compose config >/dev/null
@@ -173,8 +216,6 @@ diagnose_stack() {
     health="$(docker inspect -f '{{if .State.Health}}{{.State.Health.Status}}{{end}}' "$id" 2>/dev/null || true)"
 
     if [[ "$state" != "running" || "$health" == "unhealthy" ]]; then
-      # Successful one-shot services are expected to be exited 0 and add no value
-      # to the failure report.
       if [[ "$state" == "exited" && "$exit_code" == "0" && ( "$service" == "migrate" || "$service" == "storage-init" ) ]]; then
         continue
       fi
@@ -197,8 +238,6 @@ start_stack() {
   log "[5/8] validating Docker Compose configuration"
   docker compose config >/dev/null
 
-  # Pull only third-party services. `worker` intentionally reuses the backend
-  # image loaded below; never ask Compose to pull local app images from Docker Hub.
   log "[6/8] pulling third-party Docker images (details -> $LOG_FILE)"
   docker compose pull db migrate auth rest realtime storage storage-init kong caddy >>"$LOG_FILE" 2>&1
 
