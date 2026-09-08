@@ -159,3 +159,23 @@ def test_no_cloud_supabase_leftovers_in_templates():
     for rel in (".env.example", "frontend/.env.local.example", "README.md"):
         text = _read(rel)
         assert ".supabase.co" not in text, f"{rel} still references a cloud Supabase project"
+
+
+# --- prebuilt-image install/update safety -----------------------------------------
+
+
+def test_fresh_db_init_runs_bind_mounted_migrations_through_shell():
+    script = _read("infra/supabase/init/zz2-run-app-migrations.sh")
+
+    assert "exec sh /migrate.sh" in script
+    assert "\nexec /migrate.sh\n" not in script
+
+
+def test_candidate_local_data_is_runtime_mounted_into_prebuilt_backend_services():
+    compose = _read("docker-compose.yml")
+    mount = "./backend/data/candidate-local:/app/data/candidate-local:ro"
+
+    api_block = compose.split("  api:", 1)[1].split("\n  worker:", 1)[0]
+    worker_block = compose.split("  worker:", 1)[1].split("\n  frontend:", 1)[0]
+    assert mount in api_block
+    assert mount in worker_block
