@@ -185,6 +185,14 @@ diagnose_stack() {
   done
 }
 
+compose_or_diagnose() {
+  if ! docker compose "$@" >>"$LOG_FILE" 2>&1; then
+    echo "[otclick] docker compose command failed: docker compose $*" >&2
+    diagnose_stack
+    return 1
+  fi
+}
+
 start_stack() {
   log "[5/8] validating Docker Compose configuration"
   docker compose config >/dev/null
@@ -201,16 +209,22 @@ start_stack() {
     load_prebuilt_app_images
   fi
 
-  log "[8/8] starting services and running health checks"
-  if ! docker compose up -d --no-build --pull never >>"$LOG_FILE" 2>&1; then
-    echo "[otclick] docker compose up failed before health checks completed." >&2
-    diagnose_stack
-    return 1
-  fi
+  log "[8/8] starting infrastructure and applying migrations"
+  compose_or_diagnose up -d --no-build --pull never \
+    db migrate auth rest realtime storage storage-init kong
   wait_migrate
+  wait_http http://127.0.0.1:54321/auth/v1/health Supabase-auth 90
+
+  # Docker Compose does not reliably recreate an existing container when a new
+  # image is loaded under the same local `:latest` tag. Force only the app layer
+  # so updates always run the exact images verified above without bouncing DB.
+  log "      recreating api/frontend from current application images"
+  compose_or_diagnose up -d --no-build --pull never --force-recreate --no-deps api frontend
   wait_http http://127.0.0.1:8000/health backend 90
   wait_http http://127.0.0.1:3000 frontend 90
-  wait_http http://127.0.0.1:54321/auth/v1/health Supabase-auth 90
+
+  log "      recreating worker/caddy"
+  compose_or_diagnose up -d --no-build --pull never --force-recreate --no-deps worker caddy
 }
 ''',
 "stack-start",
@@ -244,13 +258,21 @@ replace_once(
     echo "Database backup: $BACKUP_FILE"
   fi
   echo "Log: $LOG_FILE"
-  echo "The stack can be retried without downloading/building images:"
-  echo "  cd $INSTALL_DIR && docker compose up -d --no-build --pull never"
   echo "No automatic DB rollback was attempted. Forward migrations may not be backward-compatible."
   exit "$code"
 }
 ''',
 "error-handler",
+)
+
+replace_once(
+'''  echo "After editing either local file, reload prepared candidate data with:"
+  echo "  cd $INSTALL_DIR && docker compose up -d --build api worker && docker compose exec -T api python scripts/load_candidate_data.py --user-id '$user_id' --data-dir data/candidate-local"
+''',
+'''  echo "After editing either local file, reload prepared candidate data with:"
+  echo "  cd $INSTALL_DIR && docker compose exec -T api python scripts/load_candidate_data.py --user-id '$user_id' --data-dir data/candidate-local"
+''',
+"candidate-reload",
 )
 
 path.write_text(text, encoding="utf-8")
