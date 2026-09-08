@@ -115,3 +115,22 @@ def test_one_command_installer_refuses_blind_patch_if_base_installer_changes():
 
     assert 'refusing an unsafe blind patch' in wrapper
     assert 'exec env OTCLICK_REF="$REF" bash "$TMP_INSTALL"' in wrapper
+
+
+def test_installer_auto_switches_to_external_proxy_when_80_443_are_owned_elsewhere():
+    wrapper = _wrapper()
+
+    assert "foreign_public_proxy()" in wrapper
+    assert "OTCLICK_PROXY_MODE external" in wrapper
+    assert 'CADDY_HTTP_BIND "127.0.0.1:${OTCLICK_INTERNAL_HTTP_PORT:-18080}"' in wrapper
+    assert 'CADDY_HTTPS_BIND "127.0.0.1:${OTCLICK_INTERNAL_HTTPS_PORT:-18443}"' in wrapper
+    assert 'env_set CADDY_SITE_ADDRESS ":80"' in wrapper
+    assert "external reverse proxy detected on host 80/443" in wrapper
+    assert "external proxy action required" in wrapper
+
+
+def test_compose_caddy_host_bindings_are_runtime_configurable():
+    compose = (ROOT / "docker-compose.yml").read_text(encoding="utf-8")
+
+    assert '${CADDY_HTTP_BIND:-80}:80' in compose
+    assert '${CADDY_HTTPS_BIND:-443}:443' in compose

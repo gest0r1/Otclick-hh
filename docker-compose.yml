@@ -256,9 +256,11 @@ services:
     environment:
       CADDY_SITE_ADDRESS: "${CADDY_SITE_ADDRESS:-:80}"
     ports:
-      - "80:80"
-      - "443:443"
-      - "443:443/udp"
+      # Direct mode uses 80/443. When another reverse proxy already owns those
+      # host ports, the installer switches these bindings to loopback 18080/18443.
+      - "${CADDY_HTTP_BIND:-80}:80"
+      - "${CADDY_HTTPS_BIND:-443}:443"
+      - "${CADDY_HTTPS_BIND:-443}:443/udp"
     volumes:
       - ./infra/Caddyfile:/etc/caddy/Caddyfile:ro
       - caddy-data:/data

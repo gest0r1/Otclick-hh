@@ -235,7 +235,51 @@ compose_or_diagnose() {
   fi
 }
 
+foreign_public_proxy() {
+  docker ps --format '{{.Names}}\t{{.Ports}}' 2>/dev/null \
+    | grep -Ev '^aiautoclicker-caddy[[:space:]]' \
+    | grep -Eq '(^|,|[[:space:]])(0\.0\.0\.0:|\[::\]:)?(80|443)->'
+}
+
+configure_proxy_mode() {
+  local explicit_mode mode public_url
+  explicit_mode="${OTCLICK_PROXY_MODE:-}"
+  mode="${explicit_mode:-$(env_get OTCLICK_PROXY_MODE)}"
+  public_url="$(env_get NEXT_PUBLIC_APP_URL)"
+
+  if [[ -z "$mode" || "$mode" == "auto" ]]; then
+    if foreign_public_proxy; then
+      mode="external"
+    else
+      mode="direct"
+    fi
+  fi
+
+  case "$mode" in
+    direct)
+      env_set OTCLICK_PROXY_MODE direct
+      env_set CADDY_HTTP_BIND "80"
+      env_set CADDY_HTTPS_BIND "443"
+      log "      proxy mode: direct Caddy on host 80/443"
+      ;;
+    external)
+      env_set OTCLICK_PROXY_MODE external
+      env_set CADDY_HTTP_BIND "127.0.0.1:${OTCLICK_INTERNAL_HTTP_PORT:-18080}"
+      env_set CADDY_HTTPS_BIND "127.0.0.1:${OTCLICK_INTERNAL_HTTPS_PORT:-18443}"
+      env_set CADDY_SITE_ADDRESS ":80"
+      log "      proxy mode: external reverse proxy detected on host 80/443"
+      log "      Otclick upstream: http://127.0.0.1:${OTCLICK_INTERNAL_HTTP_PORT:-18080}"
+      log "      configure ${public_url:-the Otclick domain} in the existing proxy -> this upstream"
+      ;;
+    *)
+      echo "[otclick] invalid OTCLICK_PROXY_MODE=$mode (expected auto/direct/external)" >&2
+      return 25
+      ;;
+  esac
+}
+
 start_stack() {
+  configure_proxy_mode
   log "[5/8] validating Docker Compose configuration"
   docker compose config >/dev/null
 
@@ -270,6 +314,11 @@ start_stack() {
   # across app image updates; on fresh/recovery installs this simply starts it.
   log "      ensuring caddy reverse proxy is running"
   compose_or_diagnose up -d --no-build --pull never --no-deps caddy
+
+  if [[ "$(env_get OTCLICK_PROXY_MODE)" == "external" ]]; then
+    wait_http "http://127.0.0.1:${OTCLICK_INTERNAL_HTTP_PORT:-18080}/health" internal-Caddy 60
+    log "      external proxy action required: proxy the public Otclick host to http://127.0.0.1:${OTCLICK_INTERNAL_HTTP_PORT:-18080}"
+  fi
 }
 ''',
 "stack-start",
