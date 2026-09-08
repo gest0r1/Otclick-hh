@@ -1,5 +1,6 @@
 # Full single-user stack: Caddy + frontend + backend API/worker + self-hosted Supabase.
-# Run from repo root: docker compose up -d --build
+# Installer uses exact-SHA prebuilt application images; local `--build` is an
+# explicit emergency/development path only.
 #
 # ONE env file: the repo-root .env (see .env.example). Browser traffic uses one
 # Caddy origin; internal services keep private Docker-network URLs.
@@ -184,6 +185,11 @@ services:
     restart: unless-stopped
     env_file:
       - .env
+    volumes:
+      # Per-install candidate data lives outside the prebuilt image and survives
+      # git/image updates. The application only reads it when the explicit
+      # candidate loader is invoked.
+      - ./backend/data/candidate-local:/app/data/candidate-local:ro
     ports:
       - "127.0.0.1:8000:8000"
     shm_size: "1gb"
@@ -207,6 +213,8 @@ services:
     restart: unless-stopped
     env_file:
       - .env
+    volumes:
+      - ./backend/data/candidate-local:/app/data/candidate-local:ro
     command: ["python", "worker_main.py"]
     depends_on:
       api:
