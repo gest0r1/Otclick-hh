@@ -42,6 +42,8 @@ def test_one_command_installer_prints_compose_failure_diagnostics_without_tailin
     assert 'compose_or_diagnose() {' in wrapper
     assert 'docker compose ps -a >&2' in wrapper
     assert 'docker compose logs --no-color --tail=120 "$service" >&2' in wrapper
+    assert "state_error=\"$(docker inspect -f '{{.State.Error}}'" in wrapper
+    assert 'error=${state_error:-none}' in wrapper
     assert 'docker compose command failed:' in wrapper
     assert 'tail -n 30 "$LOG_FILE"' not in wrapper
 
@@ -78,12 +80,16 @@ def test_one_command_installer_never_pulls_local_backend_as_external_image():
     assert 'docker compose up -d --build' in wrapper  # old start_stack block matched exactly
 
 
-def test_installer_starts_infra_then_forces_current_app_images():
+def test_installer_starts_infra_then_forces_only_current_app_images():
     wrapper = _wrapper()
 
     assert 'compose_or_diagnose up -d --no-build --pull never \\\n    db migrate auth rest realtime storage storage-init kong' in wrapper
     assert '--force-recreate --no-deps api frontend' in wrapper
-    assert '--force-recreate --no-deps worker caddy' in wrapper
+    assert '--force-recreate --no-deps worker' in wrapper
+    assert '--force-recreate --no-deps worker caddy' not in wrapper
+    assert 'compose_or_diagnose up -d --no-build --pull never --no-deps caddy' in wrapper
+    assert 'Caddy contains no application code' in wrapper
+    assert 'Keep an already-running proxy stable' in wrapper
     assert 'Docker Compose does not reliably recreate an existing container' in wrapper
     assert 'without bouncing DB' in wrapper
 
