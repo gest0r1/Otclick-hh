@@ -26,16 +26,16 @@ def test_env_supports_generic_openai_compatible_provider():
     assert "longcat-2.0" in env
 
 
-def test_compose_exposes_only_caddy_publicly():
+def test_compose_keeps_application_services_local_and_caddy_runtime_bindable():
     compose = _read("docker-compose.yml")
 
     assert 'GOTRUE_DISABLE_SIGNUP: "${DISABLE_SIGNUP:-true}"' in compose
     assert '"127.0.0.1:54321:8000"' in compose
     assert '"127.0.0.1:8000:8000"' in compose
     assert '"127.0.0.1:3000:3000"' in compose
-    assert '"80:80"' in compose
-    assert '"443:443"' in compose
-    assert '"443:443/udp"' in compose
+    assert '"${CADDY_HTTP_BIND:-80}:80"' in compose
+    assert '"${CADDY_HTTPS_BIND:-443}:443"' in compose
+    assert '"${CADDY_HTTPS_BIND:-443}:443/udp"' in compose
 
 
 def test_caddy_keeps_browser_on_one_origin():
