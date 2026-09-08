@@ -31,7 +31,6 @@ def test_one_command_installer_hides_noisy_package_and_docker_progress():
     assert 'apt-get update >>"$LOG_FILE" 2>&1' in wrapper
     assert 'docker compose pull db migrate auth rest realtime storage storage-init kong caddy >>"$LOG_FILE" 2>&1' in wrapper
     assert 'docker compose build api frontend >>"$LOG_FILE" 2>&1' in wrapper  # emergency override only
-    assert 'docker compose up -d --no-build --pull never >>"$LOG_FILE" 2>&1' in wrapper
     assert 'details -> $LOG_FILE' in wrapper
     assert 'trap - ERR' in wrapper
 
@@ -40,12 +39,11 @@ def test_one_command_installer_prints_compose_failure_diagnostics_without_tailin
     wrapper = _wrapper()
 
     assert 'diagnose_stack() {' in wrapper
+    assert 'compose_or_diagnose() {' in wrapper
     assert 'docker compose ps -a >&2' in wrapper
     assert 'docker compose logs --no-color --tail=120 "$service" >&2' in wrapper
-    assert 'docker compose up failed before health checks completed.' in wrapper
-    assert 'if ! docker compose up -d --no-build --pull never' in wrapper
+    assert 'docker compose command failed:' in wrapper
     assert 'tail -n 30 "$LOG_FILE"' not in wrapper
-    assert 'cd $INSTALL_DIR && docker compose up -d --no-build --pull never' in wrapper
 
 
 def test_one_command_installer_uses_exact_sha_public_prerelease_by_default():
@@ -78,7 +76,23 @@ def test_one_command_installer_never_pulls_local_backend_as_external_image():
     assert 'docker compose pull api' not in wrapper
     assert 'docker compose pull worker' not in wrapper
     assert 'docker compose up -d --build' in wrapper  # old start_stack block matched exactly
-    assert 'docker compose up -d --no-build --pull never' in wrapper
+
+
+def test_installer_starts_infra_then_forces_current_app_images():
+    wrapper = _wrapper()
+
+    assert 'compose_or_diagnose up -d --no-build --pull never \\\n    db migrate auth rest realtime storage storage-init kong' in wrapper
+    assert '--force-recreate --no-deps api frontend' in wrapper
+    assert '--force-recreate --no-deps worker caddy' in wrapper
+    assert 'Docker Compose does not reliably recreate an existing container' in wrapper
+    assert 'without bouncing DB' in wrapper
+
+
+def test_candidate_reload_uses_runtime_mount_without_building_images():
+    wrapper = _wrapper()
+
+    assert "docker compose exec -T api python scripts/load_candidate_data.py" in wrapper
+    assert "docker compose up -d --build api worker && docker compose exec" in wrapper  # old line matched for replacement
 
 
 def test_one_command_installer_refuses_blind_patch_if_base_installer_changes():
