@@ -6,12 +6,10 @@ import { useEffect, useState } from "react";
 import { createClient } from "@/lib/supabase/client";
 import { useNavCounts } from "@/hooks/useNavCounts";
 import { formatBadge } from "@/lib/nav-counts";
-import { apiFetch } from "@/lib/api";
-import { IconBtn, LinkBtn } from "@/components/otclick/ui";
-import { useQuery } from "@tanstack/react-query";
+import { IconBtn } from "@/components/otclick/ui";
 import {
   IHome, IList, IMail, IDoc, IUser, ISettings, ILogo, ILogout,
-  ITelegram, IBolt, IChevRight, IChart, ISearch,
+  ITelegram, IChevRight, IChart, ISearch,
 } from "@/components/otclick/icons";
 
 const STORAGE_KEY = "oc-sidebar-collapsed";
@@ -43,12 +41,6 @@ export default function Sidebar({ email }: { email: string | null }) {
   const [collapsed, setCollapsed] = useState(false);
   const [mounted, setMounted] = useState(false);
 
-  const { data: billing, isPending: billingPending } = useQuery({
-    queryKey: ["billing-status"],
-    queryFn: () => apiFetch<{ plan: string }>("/api/billing/status"),
-    staleTime: 60_000,
-  });
-
   useEffect(() => {
     setCollapsed(window.localStorage.getItem(STORAGE_KEY) === "1");
     setMounted(true);
@@ -69,8 +61,6 @@ export default function Sidebar({ email }: { email: string | null }) {
   }
 
   const initials = email ? email.split(/[@.]/)[0].slice(0, 2).toUpperCase() : "ME";
-  // stay hidden until the plan is actually known, otherwise Pro flashes for subscribers
-  const showPro = !billingPending && billing?.plan !== "active";
 
   return (
     <aside
@@ -87,8 +77,6 @@ export default function Sidebar({ email }: { email: string | null }) {
         top: 16,
         alignSelf: "flex-start",
         height: "calc(100vh - 32px)",
-        // no animation on the first paint: the stored collapsed width is only known
-        // after hydration, and sliding it would read as a glitch rather than intent
         transition: mounted ? "width var(--dur) var(--ease)" : "none",
       }}
     >
@@ -163,18 +151,6 @@ export default function Sidebar({ email }: { email: string | null }) {
           gap: 4,
         }}
       >
-        {showPro && (
-          <LinkBtn
-            href="/billing"
-            kind="yellow"
-            size="sm"
-            icon={<IBolt size={14} />}
-            label={collapsed ? "Подписка Pro" : undefined}
-            style={{ justifyContent: "center", marginBottom: 4 }}
-          >
-            {collapsed ? "" : "Pro"}
-          </LinkBtn>
-        )}
         <a
           href="https://t.me/UnixAuto"
           target="_blank"
