@@ -78,7 +78,17 @@ async def _login_page_diagnostics(page) -> str:
     marker = f"{title} {body}".lower()
     if any(value in marker for value in ("ddos-guard", "access denied", "доступ ограничен")):
         return "anti-bot protection page"
-    return f"title={title!r}, visible inputs={await page.locator('input:visible').count()}"
+    inputs = await page.locator("input:visible").evaluate_all(
+        """elements => elements.map(element => ({
+            type: element.type,
+            name: element.name,
+            autocomplete: element.autocomplete,
+            inputmode: element.inputMode,
+            qa: element.getAttribute("data-qa"),
+            placeholder: element.placeholder,
+        }))"""
+    )
+    return f"title={title!r}, visible inputs={inputs!r}"
 
 
 async def _open_web_login(page) -> None:
