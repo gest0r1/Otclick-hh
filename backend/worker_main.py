@@ -5,7 +5,7 @@ immediate apply. Discovery writes into `vacancy_pipeline`; scoring enriches the
 vacancy over the authenticated HH web session and persists a structured score.
 Real sending is a separate future worker fed exclusively by approved send jobs.
 
-The recruiter agent remains an independent paid/autonomous loop.
+The recruiter agent is an independent autonomous loop available to every user.
 """
 
 from __future__ import annotations
@@ -20,7 +20,6 @@ from dotenv import load_dotenv
 load_dotenv()
 
 from app.services.pipeline_scoring import score_user
-from app.services.plan import filter_paid
 from app.services.source_discovery import discover_user
 from app.services.worker_control import active_user_flags
 from app.worker.runner import get_registry
@@ -70,14 +69,13 @@ async def _run_discovery_if_due(user_id: str, enabled: bool) -> None:
 async def _reconcile(registry) -> None:
     loop = asyncio.get_running_loop()
     flags = await loop.run_in_executor(None, active_user_flags)
-    paid = set(await loop.run_in_executor(None, filter_paid, list(flags.keys())))
 
     # Existing flag tuple is (worker_enabled, agent_enabled). During migration
     # worker_enabled is reinterpreted as discovery/scoring enabled. The legacy
     # apply runner is NEVER started from worker_main; sending gets its own queue.
     desired_agent: dict[str, bool] = {}
     for uid, (discovery_on, agent_on) in flags.items():
-        desired_agent[uid] = agent_on and uid in paid
+        desired_agent[uid] = agent_on
         await _run_discovery_if_due(uid, discovery_on)
 
     # A recruiter loop can outlive the flag row between reconciles; stop it if
