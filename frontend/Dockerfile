@@ -21,6 +21,7 @@ ENV NODE_ENV=production \
 RUN useradd -m -u 1000 app
 COPY --from=builder --chown=app:app /app/.next/standalone ./
 COPY --from=builder --chown=app:app /app/.next/static ./.next/static
+COPY --from=builder --chown=app:app /app/public ./public
 
 USER app
 EXPOSE 3000
