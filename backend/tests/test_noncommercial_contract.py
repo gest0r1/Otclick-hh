@@ -19,6 +19,8 @@ def test_runtime_config_has_no_commercial_provider_settings():
     config = (ROOT / "backend/app/config.py").read_text(encoding="utf-8")
     env_example = (ROOT / ".env.example").read_text(encoding="utf-8")
     pyproject = (ROOT / "pyproject.toml").read_text(encoding="utf-8")
+    uv_lock = (ROOT / "uv.lock").read_text(encoding="utf-8")
+    installer = (ROOT / "install.sh").read_text(encoding="utf-8")
 
     for token in (
         "POLAR_",
@@ -30,6 +32,8 @@ def test_runtime_config_has_no_commercial_provider_settings():
         assert token not in config
         assert token not in env_example
     assert "polar-sdk" not in pyproject
+    assert "polar-sdk" not in uv_lock
+    assert "POLAR_" not in installer
 
 
 def test_api_router_does_not_mount_payment_routes():

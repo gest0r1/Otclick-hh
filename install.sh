@@ -303,7 +303,6 @@ configure_public_url() {
   env_set NEXT_PUBLIC_SUPABASE_URL "$public_url"
   env_set NEXT_PUBLIC_API_URL "$public_url"
   env_set NEXT_PUBLIC_APP_URL "$public_url"
-  env_set POLAR_SUCCESS_URL "$public_url/billing/success"
   log "public URL: $public_url"
 }
 
