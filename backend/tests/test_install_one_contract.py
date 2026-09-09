@@ -11,6 +11,10 @@ def _shim() -> str:
     return (ROOT / "install-one.sh").read_text(encoding="utf-8")
 
 
+def _updater() -> str:
+    return (ROOT / "install-update.sh").read_text(encoding="utf-8")
+
+
 def test_one_command_installer_preserves_existing_docker_stack():
     installer = _installer()
 
@@ -51,7 +55,7 @@ def test_one_command_installer_prints_compose_failure_diagnostics_without_tailin
     assert 'tail -n 30 "$LOG_FILE"' not in installer
 
 
-def test_one_command_installer_uses_exact_sha_public_prerelease_by_default():
+def test_full_installer_keeps_exact_sha_legacy_bundle_fallback():
     installer = _installer()
 
     assert 'git_sha="$(git rev-parse HEAD)"' in installer
@@ -112,13 +116,57 @@ def test_candidate_reload_uses_runtime_mount_without_building_images():
     assert "docker compose up -d --build api worker && docker compose exec" not in installer
 
 
-def test_legacy_install_one_is_only_a_compatibility_shim():
+def test_one_command_shim_uses_incremental_updater_for_existing_install():
     shim = _shim()
 
-    assert 'The canonical installer is now install.sh.' in shim
     assert 'RAW_URL="https://raw.githubusercontent.com/gest0r1/Otclick-hh/${REF}/install.sh"' in shim
-    assert 'exec env OTCLICK_REF="$REF" bash "$TMP_INSTALL" "$@"' in shim
+    assert '[[ -d "$INSTALL_DIR/.git"' in shim
+    assert 'install-update.sh' in shim
+    assert 'OTCLICK_FULL_INSTALL:-0' in shim
+    assert 'exec env OTCLICK_REF="$REF" OTCLICK_DIR="$INSTALL_DIR" bash "$TMP_INSTALL" "$@"' in shim
     assert 'replace_once(' not in shim
+
+
+def test_incremental_updater_downloads_only_changed_components():
+    updater = _updater()
+
+    assert 'OLD_BACKEND_HASH="$(component_hash backend)"' in updater
+    assert 'OLD_FRONTEND_HASH="$(component_hash frontend)"' in updater
+    assert 'backend unchanged; 0 bytes downloaded' in updater
+    assert 'frontend unchanged; 0 bytes downloaded' in updater
+    assert 'if [[ "$BACKEND_CHANGED" == "1" ]]' in updater
+    assert 'if [[ "$FRONTEND_CHANGED" == "1" ]]' in updater
+
+
+def test_incremental_updater_prefers_registry_layers_with_component_fallback():
+    updater = _updater()
+
+    assert 'docker pull "$image_ref"' in updater
+    assert 'registry pull complete (cached layers reused)' in updater
+    assert 'registry pull unavailable; using component fallback' in updater
+    assert 'releases/download/${fallback_tag}' in updater
+    assert 'zstd -d -c "$fallback_file" | docker load' in updater
+    assert 'sha256sum "$fallback_file"' in updater
+
+
+def test_incremental_updater_skips_unneeded_db_and_third_party_work():
+    updater = _updater()
+
+    assert 'schema unchanged; DB backup/migration cycle skipped' in updater
+    assert 'compose unchanged; third-party image pull skipped' in updater
+    assert 'if [[ "$MIGRATIONS_CHANGED" == "1" ]]' in updater
+    assert 'if [[ "$COMPOSE_CHANGED" == "1" ]]' in updater
+    assert 'creating DB backup before schema migration' in updater
+
+
+def test_incremental_updater_recreates_only_changed_app_services():
+    updater = _updater()
+
+    assert '--force-recreate --no-deps api' in updater
+    assert '--force-recreate --no-deps worker' in updater
+    assert '--force-recreate --no-deps frontend' in updater
+    assert 'docker compose up -d --no-build --pull never --no-deps caddy' in updater
+    assert 'ALLOW_REAL_APPLY=true' not in updater
 
 
 def test_installer_repairs_known_obsolete_local_wrapper_change_but_not_other_files():
