@@ -129,6 +129,15 @@ def test_login_selector_covers_current_username_field():
     from app.hh.authorize import SEL_LOGIN_INPUT
 
     assert 'input[name="username"]' in SEL_LOGIN_INPUT
+    assert 'input[type="text"]' in SEL_LOGIN_INPUT
+
+
+def test_email_code_selector_covers_current_magritte_form():
+    """Captured current HH page: the OTP wrapper was renamed in Magritte."""
+    from app.hh.authorize import SEL_CODE_CONTAINER, SEL_PIN_CODE_INPUT
+
+    assert 'applicant-login-input-otp' in SEL_CODE_CONTAINER
+    assert 'magritte-pincode-input-field' in SEL_PIN_CODE_INPUT
 
 
 @pytest.mark.asyncio
