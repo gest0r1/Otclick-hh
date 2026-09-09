@@ -15,7 +15,6 @@ async def test_worker_flag_starts_discovery_and_scoring_not_legacy_apply():
             "active_user_flags",
             return_value={"u1": (True, False)},
         ),
-        patch.object(worker_main, "filter_paid", return_value=[]),
         patch.object(
             worker_main,
             "discover_user",
@@ -60,7 +59,6 @@ async def test_discovery_and_scoring_are_not_repeated_on_every_15_second_reconci
             "active_user_flags",
             return_value={"u1": (True, False)},
         ),
-        patch.object(worker_main, "filter_paid", return_value=[]),
         patch.object(worker_main, "_monotonic", side_effect=[100.0, 101.0]),
         patch.object(
             worker_main,
