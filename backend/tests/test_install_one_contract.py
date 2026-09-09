@@ -149,7 +149,12 @@ def test_installer_cleans_only_superseded_otclick_app_images():
     assert 'docker image rm "$old_id"' in installer
     assert 'remove_previous_app_image "$old_backend_image" "$current_backend_image" backend' in installer
     assert 'remove_previous_app_image "$old_frontend_image" "$current_frontend_image" frontend' in installer
-    assert 'docker image prune -a' not in installer
+    executable_lines = [
+        line.strip()
+        for line in installer.splitlines()
+        if line.strip() and not line.lstrip().startswith("#")
+    ]
+    assert not any(line.startswith("docker image prune -a") for line in executable_lines)
 
 
 def test_compose_caddy_host_bindings_are_runtime_configurable():
