@@ -32,6 +32,7 @@ die() { printf '[otclick] ERROR: %s\n' "$*" >&2; exit 1; }
 
 on_error() {
   local code=$?
+  trap - ERR
   echo
   echo "[otclick] installation/update failed (exit $code)."
   if [[ -n "$PREVIOUS_SHA" ]]; then
@@ -104,14 +105,33 @@ require_ubuntu() {
 }
 
 install_packages() {
-  log "installing host prerequisites"
+  log "[1/8] checking host prerequisites"
   export DEBIAN_FRONTEND=noninteractive
-  apt-get update
-  apt-get install -y git curl ca-certificates python3 docker.io
-  if ! docker compose version >/dev/null 2>&1; then
-    apt-get install -y docker-compose-v2 || apt-get install -y docker-compose-plugin
+  apt-get update >>"$LOG_FILE" 2>&1
+  apt-get install -y git curl ca-certificates python3 zstd >>"$LOG_FILE" 2>&1
+
+  if command -v docker >/dev/null 2>&1 && docker compose version >/dev/null 2>&1; then
+    log "      existing Docker + Compose detected; package stack left untouched"
+  elif command -v docker >/dev/null 2>&1; then
+    if dpkg-query -W -f='${Status}' docker-ce 2>/dev/null | grep -q 'ok installed' || \
+       dpkg-query -W -f='${Status}' containerd.io 2>/dev/null | grep -q 'ok installed'; then
+      log "      Docker CE/containerd.io detected; installing matching Compose plugin"
+      apt-get install -y docker-compose-plugin >>"$LOG_FILE" 2>&1
+    else
+      log "      Ubuntu docker.io detected; installing matching Compose v2 package"
+      apt-get install -y docker-compose-v2 >>"$LOG_FILE" 2>&1
+    fi
+  elif dpkg-query -W -f='${Status}' containerd.io 2>/dev/null | grep -q 'ok installed' || \
+       apt-cache policy docker-ce 2>/dev/null | grep -Eq 'Candidate: [^ (]'; then
+    log "      Docker upstream repository/containerd.io detected; installing Docker CE stack"
+    apt-get install -y docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin >>"$LOG_FILE" 2>&1
+  else
+    log "      installing Ubuntu Docker stack"
+    apt-get install -y docker.io docker-compose-v2 >>"$LOG_FILE" 2>&1
   fi
-  systemctl enable --now docker
+
+  systemctl enable --now docker >>"$LOG_FILE" 2>&1
+  docker version >/dev/null 2>&1 || die "Docker daemon is unavailable"
   docker compose version >/dev/null 2>&1 || die "docker compose v2 is unavailable"
 }
 
@@ -187,11 +207,24 @@ checkout_repo() {
   if [[ -d "$INSTALL_DIR/.git" ]]; then
     cd "$INSTALL_DIR"
     PREVIOUS_SHA="$(git rev-parse HEAD)"
+
+    # install-one.sh used to be the feature-branch patching wrapper. Local
+    # diagnostic changes to that legacy file were already folded into the
+    # canonical install.sh. Repair only this known obsolete file so an old
+    # server checkout cannot deadlock its own updater. Never discard changes in
+    # any other tracked file automatically.
+    if [[ -n "$(git status --porcelain --untracked-files=no -- install-one.sh 2>/dev/null || true)" ]]; then
+      log "      restoring obsolete local install-one.sh changes (already folded into install.sh)"
+      git restore --source=HEAD --staged --worktree -- install-one.sh
+    fi
+
     if [[ -n "$(git status --porcelain --untracked-files=no)" ]]; then
+      log "tracked local changes that block update:"
+      git status --short --untracked-files=no | sed 's/^/[otclick]   /'
       die "tracked files in $INSTALL_DIR have local changes; commit/stash them before update"
     fi
     backup_existing
-    log "updating repository to $REF"
+    log "[2/8] updating repository to $REF"
     git fetch --prune origin
     if git show-ref --verify --quiet "refs/heads/$REF"; then
       git checkout "$REF"
@@ -201,7 +234,7 @@ checkout_repo() {
     git merge --ff-only "origin/$REF"
   else
     mkdir -p "$(dirname "$INSTALL_DIR")"
-    log "cloning $REPO_URL ($REF) to $INSTALL_DIR"
+    log "[2/8] cloning $REPO_URL ($REF) to $INSTALL_DIR"
     git clone --branch "$REF" "$REPO_URL" "$INSTALL_DIR"
     cd "$INSTALL_DIR"
   fi
@@ -415,12 +448,12 @@ configure_llm() {
 ensure_env() {
   if [[ ! -f .env ]]; then
     FRESH_ENV=1
-    log "generating .env and cryptographic secrets"
+    log "[3/8] generating .env and cryptographic secrets"
     # Installer owns the interactive LLM questions; bootstrap only generates
     # local cryptographic secrets here.
     python3 infra/bootstrap.py --openai-key ""
   else
-    log "preserving existing .env"
+    log "[3/8] preserving existing .env"
   fi
 
   env_set DISABLE_SIGNUP true
@@ -432,18 +465,26 @@ ensure_env() {
 
 ensure_candidate_files() {
   local source_dir="$INSTALL_DIR/backend/data/candidate"
+  log "[4/8] checking candidate-local data"
   mkdir -p "$CANDIDATE_LOCAL_DIR"
-  chmod 700 "$CANDIDATE_LOCAL_DIR"
   if [[ ! -f "$CANDIDATE_LOCAL_DIR/candidate_profile.json" ]]; then
     cp "$source_dir/candidate_profile.json" "$CANDIDATE_LOCAL_DIR/candidate_profile.json"
-    chmod 600 "$CANDIDATE_LOCAL_DIR/candidate_profile.json"
     log "created local candidate profile override"
   fi
   if [[ ! -f "$CANDIDATE_LOCAL_DIR/confirmed_facts.json" ]]; then
     cp "$source_dir/confirmed_facts.json" "$CANDIDATE_LOCAL_DIR/confirmed_facts.json"
-    chmod 600 "$CANDIDATE_LOCAL_DIR/confirmed_facts.json"
     log "created local confirmed-facts override"
   fi
+
+  # backend/Dockerfile runs the API/worker as uid:gid 1000:1000. Keep the host
+  # override private while ensuring that non-root container user can read the
+  # read-only bind mount. Reapply on every install/update to repair older roots.
+  chown 1000:1000 "$CANDIDATE_LOCAL_DIR" \
+    "$CANDIDATE_LOCAL_DIR/candidate_profile.json" \
+    "$CANDIDATE_LOCAL_DIR/confirmed_facts.json"
+  chmod 700 "$CANDIDATE_LOCAL_DIR"
+  chmod 600 "$CANDIDATE_LOCAL_DIR/candidate_profile.json" \
+    "$CANDIDATE_LOCAL_DIR/confirmed_facts.json"
 }
 
 wait_http() {
@@ -614,15 +655,214 @@ PY
   fi
 }
 
+load_prebuilt_app_images() {
+  local git_sha release_tag release_base manifest_file sums_file bundle_file
+  local manifest_sha expected_digest actual_digest
+  git_sha="$(git rev-parse HEAD)"
+  release_tag="install-${git_sha}"
+  release_base="https://github.com/gest0r1/Otclick-hh/releases/download/${release_tag}"
+  manifest_file="$(mktemp /tmp/otclick-manifest.XXXXXX.json)"
+  sums_file="$(mktemp /tmp/otclick-sha256.XXXXXX.txt)"
+  bundle_file="$(mktemp /tmp/otclick-images.XXXXXX.tar.zst)"
+
+  # Release assets are the public distribution channel. GitHub Actions artifacts
+  # remain the short-lived CI/diagnostic copy; the release tag is tied to the
+  # exact repository commit so we never install images from another revision.
+  if ! curl -fsSL --retry 2 --retry-delay 2 \
+      "${release_base}/manifest.json" -o "$manifest_file"; then
+    rm -f "$manifest_file" "$sums_file" "$bundle_file"
+    echo "[otclick] prebuilt release is not ready for commit ${git_sha}." >&2
+    echo "[otclick] Check: https://github.com/gest0r1/Otclick-hh/actions/workflows/build-artifact.yml" >&2
+    echo "[otclick] Local build is intentionally disabled on low-memory hosts." >&2
+    echo "[otclick] Emergency override: OTCLICK_ALLOW_LOCAL_BUILD=1" >&2
+    return 22
+  fi
+
+  manifest_sha="$(python3 - "$manifest_file" <<'PYMAN'
+import json
+import sys
+
+manifest = json.load(open(sys.argv[1], encoding="utf-8"))
+print(manifest.get("git_sha", ""))
+PYMAN
+  )"
+  if [[ "$manifest_sha" != "$git_sha" ]]; then
+    rm -f "$manifest_file" "$sums_file" "$bundle_file"
+    echo "[otclick] release manifest SHA mismatch: ${manifest_sha} != ${git_sha}" >&2
+    return 23
+  fi
+
+  curl -fsSL --retry 2 --retry-delay 2 \
+    "${release_base}/SHA256SUMS" -o "$sums_file"
+  expected_digest="$(awk '$2 == "otclick-images-linux-amd64.tar.zst" {print $1}' "$sums_file")"
+  if [[ ! "$expected_digest" =~ ^[0-9a-f]{64}$ ]]; then
+    rm -f "$manifest_file" "$sums_file" "$bundle_file"
+    echo "[otclick] release SHA256SUMS does not contain the image bundle digest" >&2
+    return 23
+  fi
+
+  log "[7/8] downloading prebuilt Otclick images (~1 GiB, no local build)"
+  curl -fL --retry 3 --retry-delay 2 --retry-all-errors \
+    "${release_base}/otclick-images-linux-amd64.tar.zst" \
+    -o "$bundle_file" >>"$LOG_FILE" 2>&1
+
+  actual_digest="$(sha256sum "$bundle_file" | awk '{print $1}')"
+  if [[ "$actual_digest" != "$expected_digest" ]]; then
+    rm -f "$manifest_file" "$sums_file" "$bundle_file"
+    echo "[otclick] release bundle SHA-256 mismatch" >&2
+    return 23
+  fi
+
+  log "      release bundle verified; loading Docker images"
+  zstd -d -c "$bundle_file" | docker load >>"$LOG_FILE" 2>&1
+  rm -f "$manifest_file" "$sums_file" "$bundle_file"
+
+  docker image inspect aiautoclicker-backend:latest >/dev/null 2>&1 || return 24
+  docker image inspect aiautoclicker-frontend:latest >/dev/null 2>&1 || return 24
+}
+
+diagnose_stack() {
+  local service id state health exit_code state_error
+  echo >&2
+  echo "[otclick] compose status:" >&2
+  docker compose ps -a >&2 || true
+  echo >&2
+  echo "[otclick] logs for exited/unhealthy services:" >&2
+
+  for service in db migrate auth rest realtime storage storage-init kong api worker frontend caddy; do
+    id="$(docker compose ps -a -q "$service" 2>/dev/null || true)"
+    [[ -n "$id" ]] || continue
+    state="$(docker inspect -f '{{.State.Status}}' "$id" 2>/dev/null || true)"
+    exit_code="$(docker inspect -f '{{.State.ExitCode}}' "$id" 2>/dev/null || true)"
+    health="$(docker inspect -f '{{if .State.Health}}{{.State.Health.Status}}{{end}}' "$id" 2>/dev/null || true)"
+    state_error="$(docker inspect -f '{{.State.Error}}' "$id" 2>/dev/null || true)"
+
+    if [[ "$state" != "running" || "$health" == "unhealthy" ]]; then
+      if [[ "$state" == "exited" && "$exit_code" == "0" && ( "$service" == "migrate" || "$service" == "storage-init" ) ]]; then
+        continue
+      fi
+      echo >&2
+      echo "[otclick] --- ${service}: state=${state:-unknown} exit=${exit_code:-?} health=${health:-n/a} error=${state_error:-none} ---" >&2
+      docker compose logs --no-color --tail=120 "$service" >&2 || true
+    fi
+  done
+}
+
+compose_or_diagnose() {
+  if ! docker compose "$@" >>"$LOG_FILE" 2>&1; then
+    echo "[otclick] docker compose command failed: docker compose $*" >&2
+    diagnose_stack
+    return 1
+  fi
+}
+
+foreign_public_proxy() {
+  docker ps --format '{{.Names}}\t{{.Ports}}' 2>/dev/null \
+    | grep -Ev '^aiautoclicker-caddy[[:space:]]' \
+    | grep -Eq '(^|,|[[:space:]])(0\.0\.0\.0:|\[::\]:)?(80|443)->'
+}
+
+configure_proxy_mode() {
+  local explicit_mode mode public_url
+  explicit_mode="${OTCLICK_PROXY_MODE:-}"
+  mode="${explicit_mode:-$(env_get OTCLICK_PROXY_MODE)}"
+  public_url="$(env_get NEXT_PUBLIC_APP_URL)"
+
+  if [[ -z "$mode" || "$mode" == "auto" ]]; then
+    if foreign_public_proxy; then
+      mode="external"
+    else
+      mode="direct"
+    fi
+  fi
+
+  case "$mode" in
+    direct)
+      env_set OTCLICK_PROXY_MODE direct
+      env_set CADDY_HTTP_BIND "80"
+      env_set CADDY_HTTPS_BIND "443"
+      log "      proxy mode: direct Caddy on host 80/443"
+      ;;
+    external)
+      env_set OTCLICK_PROXY_MODE external
+      env_set CADDY_HTTP_BIND "127.0.0.1:${OTCLICK_INTERNAL_HTTP_PORT:-18080}"
+      env_set CADDY_HTTPS_BIND "127.0.0.1:${OTCLICK_INTERNAL_HTTPS_PORT:-18443}"
+      env_set CADDY_SITE_ADDRESS ":80"
+      log "      proxy mode: external reverse proxy detected on host 80/443"
+      log "      Otclick upstream: http://127.0.0.1:${OTCLICK_INTERNAL_HTTP_PORT:-18080}"
+      log "      configure ${public_url:-the Otclick domain} in the existing proxy -> this upstream"
+      ;;
+    *)
+      echo "[otclick] invalid OTCLICK_PROXY_MODE=$mode (expected auto/direct/external)" >&2
+      return 25
+      ;;
+  esac
+}
+
+remove_previous_app_image() {
+  local old_id="$1" current_id="$2" label="$3"
+  [[ -n "$old_id" && "$old_id" != "$current_id" ]] || return 0
+
+  # Remove only the exact superseded Otclick image captured before loading the
+  # new bundle. Never run a global `docker image prune -a` on a shared host.
+  # Docker itself refuses removal if some container still references the image.
+  if docker image rm "$old_id" >>"$LOG_FILE" 2>&1; then
+    log "      removed previous ${label} Docker image"
+  else
+    log "      previous ${label} Docker image retained (still referenced; see $LOG_FILE)"
+  fi
+}
+
 start_stack() {
-  log "validating docker compose configuration"
+  local old_backend_image old_frontend_image current_backend_image current_frontend_image
+  old_backend_image="$(docker image inspect -f '{{.Id}}' aiautoclicker-backend:latest 2>/dev/null || true)"
+  old_frontend_image="$(docker image inspect -f '{{.Id}}' aiautoclicker-frontend:latest 2>/dev/null || true)"
+
+  configure_proxy_mode
+  log "[5/8] validating Docker Compose configuration"
   docker compose config >/dev/null
-  log "building and starting stack"
-  docker compose up -d --build
+
+  log "[6/8] pulling third-party Docker images (details -> $LOG_FILE)"
+  docker compose pull db migrate auth rest realtime storage storage-init kong caddy >>"$LOG_FILE" 2>&1
+
+  if [[ "${OTCLICK_ALLOW_LOCAL_BUILD:-0}" == "1" ]]; then
+    log "[7/8] emergency local build enabled (details -> $LOG_FILE)"
+    docker compose build api frontend >>"$LOG_FILE" 2>&1
+  else
+    load_prebuilt_app_images
+  fi
+
+  log "[8/8] starting infrastructure and applying migrations"
+  compose_or_diagnose up -d --no-build --pull never \
+    db migrate auth rest realtime storage storage-init kong
   wait_migrate
+  wait_http http://127.0.0.1:54321/auth/v1/health Supabase-auth 90
+
+  # Docker Compose does not reliably recreate an existing container when a new
+  # image is loaded under the same local `:latest` tag. Force only the app layer
+  # so updates always run the exact images verified above without bouncing DB.
+  log "      recreating api/frontend from current application images"
+  compose_or_diagnose up -d --no-build --pull never --force-recreate --no-deps api frontend
   wait_http http://127.0.0.1:8000/health backend 90
   wait_http http://127.0.0.1:3000 frontend 90
-  wait_http http://127.0.0.1:54321/auth/v1/health Supabase-auth 90
+
+  log "      recreating worker from current backend image"
+  compose_or_diagnose up -d --no-build --pull never --force-recreate --no-deps worker
+
+  current_backend_image="$(docker image inspect -f '{{.Id}}' aiautoclicker-backend:latest 2>/dev/null || true)"
+  current_frontend_image="$(docker image inspect -f '{{.Id}}' aiautoclicker-frontend:latest 2>/dev/null || true)"
+  remove_previous_app_image "$old_backend_image" "$current_backend_image" backend
+  remove_previous_app_image "$old_frontend_image" "$current_frontend_image" frontend
+
+  # Caddy contains no application code. Keep an already-running proxy stable
+  # across app image updates; on fresh/recovery installs this simply starts it.
+  log "      ensuring caddy reverse proxy is running"
+  compose_or_diagnose up -d --no-build --pull never --no-deps caddy
+
+  if [[ "$(env_get OTCLICK_PROXY_MODE)" == "external" ]]; then
+    wait_http "http://127.0.0.1:${OTCLICK_INTERNAL_HTTP_PORT:-18080}/health" internal-Caddy 60
+    log "      external proxy action required: proxy the public Otclick host to http://127.0.0.1:${OTCLICK_INTERNAL_HTTP_PORT:-18080}"
+  fi
 }
 
 print_profile_instructions() {
@@ -641,7 +881,7 @@ print_profile_instructions() {
   echo "These files are ignored by Git, so future one-command updates preserve them."
   echo "Bundled defaults remain in $INSTALL_DIR/backend/data/candidate/ and are not meant for local edits."
   echo "After editing either local file, reload prepared candidate data with:"
-  echo "  cd $INSTALL_DIR && docker compose up -d --build api worker && docker compose exec -T api python scripts/load_candidate_data.py --user-id '$user_id' --data-dir data/candidate-local"
+  echo "  cd $INSTALL_DIR && docker compose exec -T api python scripts/load_candidate_data.py --user-id '$user_id' --data-dir data/candidate-local"
   echo "The current local profile is seeded from the curated data; edit it only if the summary above says ACTION REQUIRED or you want to change your positioning/facts."
 }
 
