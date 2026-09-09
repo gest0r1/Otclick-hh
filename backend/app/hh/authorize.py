@@ -123,7 +123,13 @@ async def _open_web_login(page) -> None:
         await applicant_type.check()
         await page.locator(SEL_ACCOUNT_TYPE_SUBMIT).click()
 
-    # The next HH screen defaults to phone sign-in. This product receives an\n    # email address, so switch explicitly before locating the username field.\n    email_credential_type = page.locator(SEL_EMAIL_CREDENTIAL_TYPE)\n    if await email_credential_type.count():\n        await email_credential_type.check()\n\n    try:
+    # The next HH screen defaults to phone sign-in. This product receives an
+    # email address, so switch explicitly before locating the username field.
+    email_credential_type = page.locator(SEL_EMAIL_CREDENTIAL_TYPE)
+    if await email_credential_type.count():
+        await email_credential_type.check()
+
+    try:
         await page.wait_for_selector(SEL_LOGIN_INPUT, timeout=15000, state="visible")
     except Exception as ex:
         diagnostics = await _login_page_diagnostics(page)
