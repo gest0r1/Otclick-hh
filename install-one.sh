@@ -33,7 +33,7 @@ def replace_once(old: str, new: str, label: str) -> None:
 
 
 replace_once(
-'''install_packages() {
+r'''install_packages() {
   log "installing host prerequisites"
   export DEBIAN_FRONTEND=noninteractive
   apt-get update
@@ -45,7 +45,7 @@ replace_once(
   docker compose version >/dev/null 2>&1 || die "docker compose v2 is unavailable"
 }
 ''',
-'''install_packages() {
+r'''install_packages() {
   log "[1/8] checking host prerequisites"
   export DEBIAN_FRONTEND=noninteractive
   apt-get update >>"$LOG_FILE" 2>&1
@@ -80,7 +80,7 @@ replace_once(
 )
 
 replace_once(
-'''ensure_candidate_files() {
+r'''ensure_candidate_files() {
   local source_dir="$INSTALL_DIR/backend/data/candidate"
   mkdir -p "$CANDIDATE_LOCAL_DIR"
   chmod 700 "$CANDIDATE_LOCAL_DIR"
@@ -96,7 +96,7 @@ replace_once(
   fi
 }
 ''',
-'''ensure_candidate_files() {
+r'''ensure_candidate_files() {
   local source_dir="$INSTALL_DIR/backend/data/candidate"
   mkdir -p "$CANDIDATE_LOCAL_DIR"
   if [[ ! -f "$CANDIDATE_LOCAL_DIR/candidate_profile.json" ]]; then
@@ -123,7 +123,7 @@ replace_once(
 )
 
 replace_once(
-'''start_stack() {
+r'''start_stack() {
   log "validating docker compose configuration"
   docker compose config >/dev/null
   log "building and starting stack"
@@ -134,7 +134,7 @@ replace_once(
   wait_http http://127.0.0.1:54321/auth/v1/health Supabase-auth 90
 }
 ''',
-'''load_prebuilt_app_images() {
+r'''load_prebuilt_app_images() {
   local git_sha release_tag release_base manifest_file sums_file bundle_file
   local manifest_sha expected_digest actual_digest
   git_sha="$(git rev-parse HEAD)"
@@ -325,7 +325,7 @@ start_stack() {
 )
 
 replace_once(
-'''on_error() {
+r'''on_error() {
   local code=$?
   echo
   echo "[otclick] installation/update failed (exit $code)."
@@ -340,7 +340,7 @@ replace_once(
   exit "$code"
 }
 ''',
-'''on_error() {
+r'''on_error() {
   local code=$?
   trap - ERR
   echo
@@ -360,10 +360,10 @@ replace_once(
 )
 
 replace_once(
-'''  echo "After editing either local file, reload prepared candidate data with:"
+r'''  echo "After editing either local file, reload prepared candidate data with:"
   echo "  cd $INSTALL_DIR && docker compose up -d --build api worker && docker compose exec -T api python scripts/load_candidate_data.py --user-id '$user_id' --data-dir data/candidate-local"
 ''',
-'''  echo "After editing either local file, reload prepared candidate data with:"
+r'''  echo "After editing either local file, reload prepared candidate data with:"
   echo "  cd $INSTALL_DIR && docker compose exec -T api python scripts/load_candidate_data.py --user-id '$user_id' --data-dir data/candidate-local"
 ''',
 "candidate-reload",
