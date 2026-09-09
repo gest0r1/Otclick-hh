@@ -166,6 +166,8 @@ async def _verified_web_cookies(page, context) -> list[dict]:
             wait_until="domcontentloaded",
         )
         status = getattr(response, "status", None)
+        if status in {401, 403}:
+            raise RuntimeError("HH rejected the login: invalid email or password")
         if status is not None and status >= 400:
             raise RuntimeError(f"HH session validation returned HTTP {status}")
         if _is_auth_wall(probe.url):
