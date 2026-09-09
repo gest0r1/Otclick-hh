@@ -20,7 +20,18 @@ logger = logging.getLogger(__name__)
 HH_WEB_LOGIN = "https://hh.ru/account/login"
 HH_SESSION_CHECK = "https://hh.ru/applicant/resumes"
 
-SEL_LOGIN_INPUT = 'input[data-qa="login-input-username"], input[name="login"], input[type="email"]'
+# HH changes the first step of the form independently for desktop/mobile and
+# for A/B experiments.  `username` is the current Magritte field name; the
+# other variants are kept for older rollouts and regional mirrors.
+SEL_LOGIN_INPUT = (
+    'input[data-qa="login-input-username"], '
+    'input[data-qa="applicant-login-input-email"], '
+    'input[name="username"], '
+    'input[name="login"], '
+    'input[autocomplete="username"], '
+    'input[type="email"], '
+    'input[type="tel"]'
+)
 SEL_EXPAND_PASSWORD = (
     'button:has-text("Войти с паролем"), '
     'button:has-text("Войти по паролю"), '
@@ -44,6 +55,25 @@ def _is_auth_wall(url: str) -> bool:
     return "/account/login" in url or "/account/captcha" in url
 
 
+async def _login_page_diagnostics(page) -> str:
+    """Return a small, non-sensitive description when HH did not render login.
+
+    DDoS-Guard commonly returns an HTTP 200 challenge page, so the HTTP status
+    alone cannot distinguish it from a usable login form.  Do not include the
+    full HTML: it can contain anti-bot tokens and is not useful to the user.
+    """
+    try:
+        title = (await page.title()).strip()
+        body = " ".join((await page.locator("body").inner_text()).split())[:500]
+    except Exception:
+        return "page content could not be read"
+
+    marker = f"{title} {body}".lower()
+    if any(value in marker for value in ("ddos-guard", "access denied", "доступ ограничен")):
+        return "anti-bot protection page"
+    return f"title={title!r}, visible inputs={await page.locator('input:visible').count()}"
+
+
 async def _open_web_login(page) -> None:
     """Open the normal HH login page and wait for the actual form.
 
@@ -58,12 +88,19 @@ async def _open_web_login(page) -> None:
     )
     status = getattr(response, "status", None)
     if status is not None and status >= 400:
+        if status in {403, 429, 451}:
+            raise RuntimeError(
+                "HH login is blocked by the site's anti-bot protection "
+                f"(HTTP {status}); this is not an account-password error"
+            )
         raise RuntimeError(f"HH login page returned HTTP {status}")
     try:
         await page.wait_for_selector(SEL_LOGIN_INPUT, timeout=15000, state="visible")
     except Exception as ex:
+        diagnostics = await _login_page_diagnostics(page)
         raise RuntimeError(
-            f"HH login form did not become ready (url={page.url})"
+            "HH login form did not become ready "
+            f"(url={page.url}; {diagnostics})"
         ) from ex
 
 
