@@ -30,7 +30,11 @@ SEL_LOGIN_INPUT = (
     'input[name="login"], '
     'input[autocomplete="username"], '
     'input[type="email"], '
-    'input[type="tel"]'
+    'input[type="tel"], '
+    # Some current regional login pages omit both name and data-qa.  Scope the
+    # generic fallback to the login form so it cannot select unrelated fields.
+    'form[data-qa="account-login-form"] input[type="text"]:not([autocomplete="one-time-code"]), '
+    'form[data-qa="account-login-form"] input:not([type]):not([autocomplete="one-time-code"])'
 )
 SEL_EXPAND_PASSWORD = (
     'button:has-text("Войти с паролем"), '
@@ -47,7 +51,10 @@ SEL_PASSWORD_INPUT = (
 SEL_CAPTCHA_IMAGE = 'img[data-qa="account-captcha-picture"]'
 SEL_CAPTCHA_INPUT = 'input[data-qa="account-captcha-input"]'
 
-SEL_CODE_CONTAINER = 'div[data-qa="account-login-code-input"]'
+SEL_CODE_CONTAINER = (
+    'div[data-qa="account-login-code-input"], '
+    'div[data-qa="applicant-login-input-otp"]'
+)
 SEL_PIN_CODE_INPUT = 'input[data-qa="magritte-pincode-input-field"]'
 
 
