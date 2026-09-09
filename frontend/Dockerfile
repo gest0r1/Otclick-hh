@@ -18,11 +18,12 @@ ENV NODE_ENV=production \
     HOSTNAME=0.0.0.0 \
     PORT=3000
 
-RUN useradd -m -u 1000 app
-COPY --from=builder --chown=app:app /app/.next/standalone ./
-COPY --from=builder --chown=app:app /app/.next/static ./.next/static
-COPY --from=builder --chown=app:app /app/public ./public
+# node:22-slim already provides the unprivileged `node` user (uid 1000).
+# Reuse it instead of creating another uid 1000 account.
+COPY --from=builder --chown=node:node /app/.next/standalone ./
+COPY --from=builder --chown=node:node /app/.next/static ./.next/static
+COPY --from=builder --chown=node:node /app/public ./public
 
-USER app
+USER node
 EXPOSE 3000
 CMD ["node", "server.js"]
