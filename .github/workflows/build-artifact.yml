@@ -30,7 +30,7 @@ concurrency:
 
 jobs:
   noncommercial-cleanup:
-    if: github.event_name == 'push' && github.event.head_commit.message == 'chore: trigger noncommercial cleanup'
+    if: "${{ github.event_name == 'push' && github.event.head_commit.message == 'chore: trigger noncommercial cleanup' }}"
     name: Finalize noncommercial runtime cleanup
     runs-on: ubuntu-24.04
     steps:
@@ -122,7 +122,7 @@ jobs:
           git push origin HEAD:feature/persistent-vacancy-funnel
 
   build-linux-amd64:
-    if: github.event_name != 'push' || github.event.head_commit.message != 'chore: trigger noncommercial cleanup'
+    if: "${{ github.event_name != 'push' || github.event.head_commit.message != 'chore: trigger noncommercial cleanup' }}"
     name: Build Linux amd64 bundle
     runs-on: ubuntu-24.04
     steps:
