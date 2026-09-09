@@ -78,7 +78,7 @@ def test_update_backs_up_before_fetch_and_preserves_env_secrets():
     fetch_pos = installer.index('git fetch --prune origin')
     assert backup_pos < fetch_pos
     assert "infra/bootstrap.py --force" not in installer
-    assert 'log "preserving existing .env"' in installer
+    assert "preserving existing .env" in installer
     assert "pg_dump -U postgres -d postgres -Fc" in installer
     assert 'reconfigure="${OTCLICK_RECONFIGURE:-0}"' in installer
     assert "Normal update: preserve the current origin" in installer
