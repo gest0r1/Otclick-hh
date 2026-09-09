@@ -34,13 +34,36 @@ jobs:
               get_auth_code,
               get_auth_code_via_email_code,
           )
+          from playwright.async_api import async_playwright
 
 
           class CodePageReached(Exception):
               pass
 
 
+          async def inspect_account_type_screen():
+              async with async_playwright() as pw:
+                  browser = await pw.chromium.launch(headless=True)
+                  try:
+                      context = await browser.new_context(**pw.devices["Galaxy A55"])
+                      page = await context.new_page()
+                      await page.goto("https://hh.ru/account/login", wait_until="domcontentloaded")
+                      await page.wait_for_timeout(1000)
+                      print("landing inputs:", await page.locator("input:visible").evaluate_all(
+                          "elements => elements.map(e => ({type:e.type, qa:e.getAttribute('data-qa'), checked:e.checked}))"
+                      ))
+                      print("landing buttons:", await page.locator("button:visible").evaluate_all(
+                          "elements => elements.map(e => ({qa:e.getAttribute('data-qa'), text:(e.innerText||'').trim()}))"
+                      ))
+                      print("landing links:", await page.locator("a:visible").evaluate_all(
+                          "elements => elements.map(e => ({qa:e.getAttribute('data-qa'), text:(e.innerText||'').trim()}))"
+                      ))
+                  finally:
+                      await browser.close()
+
+
           async def main():
+              await inspect_account_type_screen()
               email = f"otclick-smoke-{uuid.uuid4().hex[:12]}@example.invalid"
 
               try:
