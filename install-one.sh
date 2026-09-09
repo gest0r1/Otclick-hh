@@ -325,6 +325,53 @@ start_stack() {
 )
 
 replace_once(
+r'''start_stack() {
+  configure_proxy_mode
+''',
+r'''remove_previous_app_image() {
+  local old_id="$1" current_id="$2" label="$3"
+  [[ -n "$old_id" && "$old_id" != "$current_id" ]] || return 0
+
+  # Remove only the exact superseded Otclick image captured before loading the
+  # new bundle. Never run a global `docker image prune -a` on a shared host.
+  # Docker itself refuses removal if some container still references the image.
+  if docker image rm "$old_id" >>"$LOG_FILE" 2>&1; then
+    log "      removed previous ${label} Docker image"
+  else
+    log "      previous ${label} Docker image retained (still referenced; see $LOG_FILE)"
+  fi
+}
+
+start_stack() {
+  local old_backend_image old_frontend_image current_backend_image current_frontend_image
+  old_backend_image="$(docker image inspect -f '{{.Id}}' aiautoclicker-backend:latest 2>/dev/null || true)"
+  old_frontend_image="$(docker image inspect -f '{{.Id}}' aiautoclicker-frontend:latest 2>/dev/null || true)"
+
+  configure_proxy_mode
+''',
+"app-image-cleanup-capture",
+)
+
+replace_once(
+r'''  log "      recreating worker from current backend image"
+  compose_or_diagnose up -d --no-build --pull never --force-recreate --no-deps worker
+
+  # Caddy contains no application code. Keep an already-running proxy stable
+''',
+r'''  log "      recreating worker from current backend image"
+  compose_or_diagnose up -d --no-build --pull never --force-recreate --no-deps worker
+
+  current_backend_image="$(docker image inspect -f '{{.Id}}' aiautoclicker-backend:latest 2>/dev/null || true)"
+  current_frontend_image="$(docker image inspect -f '{{.Id}}' aiautoclicker-frontend:latest 2>/dev/null || true)"
+  remove_previous_app_image "$old_backend_image" "$current_backend_image" backend
+  remove_previous_app_image "$old_frontend_image" "$current_frontend_image" frontend
+
+  # Caddy contains no application code. Keep an already-running proxy stable
+''',
+"app-image-cleanup-remove",
+)
+
+replace_once(
 r'''on_error() {
   local code=$?
   echo
