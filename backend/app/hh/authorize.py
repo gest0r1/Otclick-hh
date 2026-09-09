@@ -57,6 +57,9 @@ SEL_CODE_CONTAINER = (
 )
 SEL_PIN_CODE_INPUT = 'input[data-qa="magritte-pincode-input-field"]'
 
+SEL_APPLICANT_ACCOUNT_TYPE = 'input[data-qa*="account-type-card-APPLICANT"]'
+SEL_ACCOUNT_TYPE_SUBMIT = 'button[data-qa="submit-button"]'
+
 
 def _is_auth_wall(url: str) -> bool:
     return "/account/login" in url or "/account/captcha" in url
@@ -111,6 +114,14 @@ async def _open_web_login(page) -> None:
                 f"(HTTP {status}); this is not an account-password error"
             )
         raise RuntimeError(f"HH login page returned HTTP {status}")
+    # HH can first ask whether the visitor is an applicant or an employer.
+    # The applicant radio is selected by default, but its explicit "Войти"
+    # button must still be pressed before the credential form is rendered.
+    applicant_type = page.locator(SEL_APPLICANT_ACCOUNT_TYPE)
+    if await applicant_type.count():
+        await applicant_type.check()
+        await page.locator(SEL_ACCOUNT_TYPE_SUBMIT).click()
+
     try:
         await page.wait_for_selector(SEL_LOGIN_INPUT, timeout=15000, state="visible")
     except Exception as ex:
