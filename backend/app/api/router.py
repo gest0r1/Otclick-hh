@@ -4,7 +4,6 @@ from app.api import (
     _debug,
     analytics,
     auth,
-    billing,
     blacklist,
     candidate_context,
     captcha,
@@ -20,7 +19,6 @@ from app.api import (
     selection_rules,
     send_queue,
     vacancies,
-    webhooks,
     worker,
 )
 from app.config import settings
@@ -38,8 +36,6 @@ api_router.include_router(worker.router)
 api_router.include_router(captcha.router)
 api_router.include_router(internal.router)
 api_router.include_router(blacklist.router)
-api_router.include_router(billing.router)
-api_router.include_router(webhooks.router)
 api_router.include_router(recruiter.router)
 api_router.include_router(chats.router)
 api_router.include_router(forms.router)
