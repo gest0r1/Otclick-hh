@@ -6,6 +6,7 @@ on:
       - feature/persistent-vacancy-funnel
     paths:
       - .github/workflows/hh-live-smoke.yml
+      - backend/app/hh/authorize.py
   workflow_dispatch:
 
 permissions:
