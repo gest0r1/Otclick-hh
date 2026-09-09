@@ -21,19 +21,27 @@ def test_linux_artifact_publishes_content_addressed_components():
     assert 'docker image inspect "$FRONTEND_TAG"' in workflow
 
 
-def test_linux_artifact_has_per_component_fallbacks_not_combined_bundle():
+def test_linux_artifact_has_per_component_fallbacks_for_incremental_updates():
     workflow = _workflow()
 
     assert "otclick-backend-linux-amd64.tar.zst" in workflow
     assert "otclick-frontend-linux-amd64.tar.zst" in workflow
     assert "component-backend-${BACKEND_HASH}" in workflow
     assert "component-frontend-${FRONTEND_HASH}" in workflow
-    assert "otclick-images-linux-amd64.tar.zst" not in workflow
     assert 'docker save "$image"' in workflow
     assert "Fallback already exists" in workflow
 
 
-def test_exact_commit_release_is_tiny_manifest_metadata():
+def test_legacy_combined_bundle_is_retained_only_for_fresh_install_compatibility():
+    workflow = _workflow()
+
+    assert "Package fresh-install compatibility bundle" in workflow
+    assert "fresh-install/otclick-images-linux-amd64.tar.zst" in workflow
+    assert "incremental updater never downloads it" in workflow
+    assert '"fresh_install_bundle": "otclick-images-linux-amd64.tar.zst"' in workflow
+
+
+def test_exact_commit_release_contains_v2_manifest_and_metadata():
     workflow = _workflow()
 
     assert 'tag="install-${GITHUB_SHA}"' in workflow
