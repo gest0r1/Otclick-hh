@@ -106,6 +106,32 @@ async def test_web_login_entrypoint_rejects_http_error_page():
 
 
 @pytest.mark.asyncio
+async def test_web_login_entrypoint_explains_antibot_block():
+    from app.hh.authorize import _open_web_login
+
+    class Response:
+        status = 451
+
+    class Page:
+        url = "https://tambov.hh.ru/account/login"
+
+        async def goto(self, _url, **_kwargs):
+            return Response()
+
+        async def wait_for_selector(self, *_args, **_kwargs):
+            raise AssertionError("form readiness must not be checked after HTTP 451")
+
+    with pytest.raises(RuntimeError, match="anti-bot protection.*HTTP 451"):
+        await _open_web_login(Page())
+
+
+def test_login_selector_covers_current_username_field():
+    from app.hh.authorize import SEL_LOGIN_INPUT
+
+    assert 'input[name="username"]' in SEL_LOGIN_INPUT
+
+
+@pytest.mark.asyncio
 async def test_verified_web_cookies_probe_authenticated_page():
     from app.hh.authorize import HH_SESSION_CHECK, _verified_web_cookies
 
