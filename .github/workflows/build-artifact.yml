@@ -25,11 +25,10 @@ permissions:
 
 # Normal updates are componentized:
 # - backend and frontend are immutable content-hash images in GHCR;
-# - exact-commit releases contain only a tiny manifest + installer metadata;
-# - fallback image archives live in content-hash component releases and are
-#   created only once per changed component.
-# A server therefore pulls no application bytes for unchanged components and,
-# when GHCR is public, Docker downloads only missing layers of changed images.
+# - exact-commit releases contain a tiny manifest used by install-update.sh;
+# - per-component fallback archives are created only once per changed component.
+# A legacy combined bundle is still attached to the exact release for *fresh*
+# install.sh compatibility, but the incremental updater never downloads it.
 concurrency:
   group: install-artifact-${{ github.ref }}
   cancel-in-progress: true
@@ -134,7 +133,7 @@ jobs:
           fi
 
           # Pull once on the CI runner to resolve immutable RepoDigest refs and
-          # to make the images available if a fallback archive must be created.
+          # to make the images available for fallback/fresh-install archives.
           docker pull "$BACKEND_TAG"
           docker pull "$FRONTEND_TAG"
           docker tag "$BACKEND_TAG" aiautoclicker-backend:latest
@@ -209,6 +208,18 @@ jobs:
           publish_component frontend "$FRONTEND_HASH" aiautoclicker-frontend:latest \
             "$FRONTEND_FALLBACK_TAG" otclick-frontend-linux-amd64.tar.zst
 
+      - name: Package fresh-install compatibility bundle
+        id: fresh
+        run: |
+          set -euo pipefail
+          command -v zstd >/dev/null 2>&1 || { sudo apt-get update -qq && sudo apt-get install -y -qq zstd; }
+          mkdir -p fresh-install
+          docker save \
+            aiautoclicker-backend:latest \
+            aiautoclicker-frontend:latest \
+            | zstd -T0 -10 -o fresh-install/otclick-images-linux-amd64.tar.zst
+          echo "bundle_size=$(du -h fresh-install/otclick-images-linux-amd64.tar.zst | cut -f1)" >> "$GITHUB_OUTPUT"
+
       - name: Package exact-commit manifest
         id: package
         run: |
@@ -248,6 +259,7 @@ jobs:
                   "infra": os.environ["INFRA_HASH"],
                   "migrations": os.environ["MIGRATIONS_HASH"],
               },
+              "fresh_install_bundle": "otclick-images-linux-amd64.tar.zst",
           }
           (out / "manifest.json").write_text(
               json.dumps(manifest, ensure_ascii=False, indent=2) + "\n",
@@ -255,9 +267,11 @@ jobs:
           )
           PY
 
-          (cd artifacts && sha256sum \
-            manifest.json install.sh install-one.sh install-update.sh docker-compose.yml \
-            > SHA256SUMS)
+          {
+            (cd artifacts && sha256sum manifest.json install.sh install-one.sh install-update.sh docker-compose.yml)
+            sha256sum fresh-install/otclick-images-linux-amd64.tar.zst \
+              | sed 's#fresh-install/##'
+          } > artifacts/SHA256SUMS
           echo "metadata_size=$(du -sh artifacts | cut -f1)" >> "$GITHUB_OUTPUT"
 
       - name: Upload exact-commit metadata artifact
@@ -277,7 +291,7 @@ jobs:
           set -euo pipefail
           tag="install-${GITHUB_SHA}"
           title="Otclick incremental install ${GITHUB_SHA:0:12}"
-          notes="Exact-SHA incremental install manifest. Application images are content-addressed components; no runtime secrets are included."
+          notes="Exact-SHA incremental install manifest. Existing installs use content-addressed components; the large combined asset is retained only for fresh install.sh compatibility."
 
           retry_gh() {
             local attempt
@@ -296,6 +310,7 @@ jobs:
               artifacts/install-one.sh \
               artifacts/install-update.sh \
               artifacts/docker-compose.yml \
+              fresh-install/otclick-images-linux-amd64.tar.zst \
               --clobber \
               --repo "$GITHUB_REPOSITORY"
           else
@@ -306,6 +321,7 @@ jobs:
               artifacts/install-one.sh \
               artifacts/install-update.sh \
               artifacts/docker-compose.yml \
+              fresh-install/otclick-images-linux-amd64.tar.zst \
               --target "$GITHUB_SHA" \
               --prerelease \
               --title "$title" \
@@ -324,6 +340,7 @@ jobs:
             echo "- Backend image: \`${BACKEND_IMAGE}\`"
             echo "- Frontend image: \`${FRONTEND_IMAGE}\`"
             echo "- Exact release metadata: ${{ steps.package.outputs.metadata_size }}"
+            echo "- Fresh-install compatibility bundle: ${{ steps.fresh.outputs.bundle_size }} (incremental updater does not download this)"
             echo "- Actions metadata artifact: [download](${{ steps.upload.outputs.artifact-url }})"
             echo "- Public prerelease: https://github.com/${GITHUB_REPOSITORY}/releases/tag/install-${GITHUB_SHA}"
             echo "- Unchanged components are not downloaded by install-update.sh"
