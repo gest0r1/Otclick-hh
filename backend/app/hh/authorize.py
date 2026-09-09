@@ -59,6 +59,7 @@ SEL_PIN_CODE_INPUT = 'input[data-qa="magritte-pincode-input-field"]'
 
 SEL_APPLICANT_ACCOUNT_TYPE = 'input[data-qa*="account-type-card-APPLICANT"]'
 SEL_ACCOUNT_TYPE_SUBMIT = 'button[data-qa="submit-button"]'
+SEL_EMAIL_CREDENTIAL_TYPE = 'input[data-qa*="credential-type-email"]'
 
 
 def _is_auth_wall(url: str) -> bool:
@@ -122,7 +123,7 @@ async def _open_web_login(page) -> None:
         await applicant_type.check()
         await page.locator(SEL_ACCOUNT_TYPE_SUBMIT).click()
 
-    try:
+    # The next HH screen defaults to phone sign-in. This product receives an\n    # email address, so switch explicitly before locating the username field.\n    email_credential_type = page.locator(SEL_EMAIL_CREDENTIAL_TYPE)\n    if await email_credential_type.count():\n        await email_credential_type.check()\n\n    try:
         await page.wait_for_selector(SEL_LOGIN_INPUT, timeout=15000, state="visible")
     except Exception as ex:
         diagnostics = await _login_page_diagnostics(page)
