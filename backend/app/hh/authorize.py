@@ -127,7 +127,7 @@ async def _open_web_login(page) -> None:
     # email address, so switch explicitly before locating the username field.
     email_credential_type = page.locator(SEL_EMAIL_CREDENTIAL_TYPE)
     if await email_credential_type.count():
-        await email_credential_type.check()
+        await email_credential_type.check(force=True)
 
     try:
         await page.wait_for_selector(SEL_LOGIN_INPUT, timeout=15000, state="visible")
