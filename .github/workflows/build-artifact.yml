@@ -1,4 +1,4 @@
-name: Build Linux install artifact
+name: Build incremental Linux install components
 
 on:
   workflow_dispatch:
@@ -16,76 +16,238 @@ on:
       - "docker-compose.yml"
       - "install.sh"
       - "install-one.sh"
+      - "install-update.sh"
       - ".github/workflows/build-artifact.yml"
 
 permissions:
   contents: write
+  packages: write
 
-# Distribution/diagnostic artifact: prebuilt app images plus exact installer and
-# compose metadata for this commit. Runtime secrets and .env are never included.
-# The bundle is also valid for external reverse-proxy mode (e.g. Nginx Proxy Manager).
+# Normal updates are componentized:
+# - backend and frontend are immutable content-hash images in GHCR;
+# - exact-commit releases contain only a tiny manifest + installer metadata;
+# - fallback image archives live in content-hash component releases and are
+#   created only once per changed component.
+# A server therefore pulls no application bytes for unchanged components and,
+# when GHCR is public, Docker downloads only missing layers of changed images.
 concurrency:
   group: install-artifact-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
   build-linux-amd64:
-    name: Build Linux amd64 bundle
+    name: Build incremental Linux amd64 components
     runs-on: ubuntu-24.04
     steps:
       - name: Checkout
         uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
 
-      - name: Prepare deterministic build config
+      - name: Validate installers and compose contract
         run: |
           set -euo pipefail
           bash -n install.sh
           bash -n install-one.sh
+          bash -n install-update.sh
           python3 -m py_compile infra/bootstrap.py infra/verify_llm.py backend/scripts/load_candidate_data.py
           python3 infra/bootstrap.py --openai-key ci-placeholder
           docker compose config >/dev/null
 
-      - name: Build Otclick application images
+      - name: Compute content hashes
         run: |
           set -euo pipefail
-          docker compose build api frontend
-          docker image inspect aiautoclicker-backend:latest >/dev/null
-          docker image inspect aiautoclicker-frontend:latest >/dev/null
+          python3 - <<'PY' >> "$GITHUB_ENV"
+          from __future__ import annotations
 
-      - name: Package install artifact
-        id: package
+          import hashlib
+          from pathlib import Path
+          import subprocess
+
+          pathspecs = {
+              "BACKEND_HASH": [
+                  ".dockerignore",
+                  "backend/Dockerfile",
+                  "backend/app",
+                  "backend/worker_main.py",
+                  "backend/data",
+                  "backend/scripts",
+                  "pyproject.toml",
+                  "uv.lock",
+              ],
+              "FRONTEND_HASH": ["frontend"],
+              "COMPOSE_HASH": ["docker-compose.yml"],
+              "INFRA_HASH": ["infra"],
+              "MIGRATIONS_HASH": ["infra/supabase/migrations"],
+          }
+
+          def content_hash(specs: list[str]) -> str:
+              raw = subprocess.check_output(["git", "ls-files", "-z", "--", *specs])
+              files = sorted({p.decode("utf-8") for p in raw.split(b"\0") if p})
+              h = hashlib.sha256()
+              for rel in files:
+                  path = Path(rel)
+                  if not path.is_file():
+                      continue
+                  h.update(rel.encode("utf-8"))
+                  h.update(b"\0")
+                  h.update(path.read_bytes())
+                  h.update(b"\0")
+              return h.hexdigest()
+
+          for key, specs in pathspecs.items():
+              print(f"{key}={content_hash(specs)}")
+          PY
+
+      - name: Login to GitHub Container Registry
+        run: |
+          set -euo pipefail
+          echo "${{ github.token }}" | docker login ghcr.io -u "$GITHUB_ACTOR" --password-stdin
+
+      - name: Reuse or publish immutable component images
+        run: |
+          set -euo pipefail
+          owner="${GITHUB_REPOSITORY_OWNER,,}"
+          BACKEND_TAG="ghcr.io/${owner}/otclick-hh-backend:component-${BACKEND_HASH}"
+          FRONTEND_TAG="ghcr.io/${owner}/otclick-hh-frontend:component-${FRONTEND_HASH}"
+
+          if docker manifest inspect "$BACKEND_TAG" >/dev/null 2>&1; then
+            echo "Reusing backend component ${BACKEND_HASH}"
+          else
+            echo "Building backend component ${BACKEND_HASH}"
+            docker build \
+              --label "org.opencontainers.image.source=https://github.com/${GITHUB_REPOSITORY}" \
+              -f backend/Dockerfile \
+              -t "$BACKEND_TAG" \
+              .
+            docker push "$BACKEND_TAG"
+          fi
+
+          if docker manifest inspect "$FRONTEND_TAG" >/dev/null 2>&1; then
+            echo "Reusing frontend component ${FRONTEND_HASH}"
+          else
+            echo "Building frontend component ${FRONTEND_HASH}"
+            docker build \
+              --label "org.opencontainers.image.source=https://github.com/${GITHUB_REPOSITORY}" \
+              -f frontend/Dockerfile \
+              -t "$FRONTEND_TAG" \
+              frontend
+            docker push "$FRONTEND_TAG"
+          fi
+
+          # Pull once on the CI runner to resolve immutable RepoDigest refs and
+          # to make the images available if a fallback archive must be created.
+          docker pull "$BACKEND_TAG"
+          docker pull "$FRONTEND_TAG"
+          docker tag "$BACKEND_TAG" aiautoclicker-backend:latest
+          docker tag "$FRONTEND_TAG" aiautoclicker-frontend:latest
+
+          BACKEND_IMAGE="$(docker image inspect "$BACKEND_TAG" --format '{{index .RepoDigests 0}}')"
+          FRONTEND_IMAGE="$(docker image inspect "$FRONTEND_TAG" --format '{{index .RepoDigests 0}}')"
+          [[ "$BACKEND_IMAGE" == ghcr.io/*@sha256:* ]]
+          [[ "$FRONTEND_IMAGE" == ghcr.io/*@sha256:* ]]
+
+          {
+            echo "BACKEND_TAG=$BACKEND_TAG"
+            echo "FRONTEND_TAG=$FRONTEND_TAG"
+            echo "BACKEND_IMAGE=$BACKEND_IMAGE"
+            echo "FRONTEND_IMAGE=$FRONTEND_IMAGE"
+            echo "BACKEND_FALLBACK_TAG=component-backend-${BACKEND_HASH}"
+            echo "FRONTEND_FALLBACK_TAG=component-frontend-${FRONTEND_HASH}"
+          } >> "$GITHUB_ENV"
+
+      - name: Publish component fallback archives once
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
           command -v zstd >/dev/null 2>&1 || { sudo apt-get update -qq && sudo apt-get install -y -qq zstd; }
+
+          release_has_assets() {
+            local tag="$1" asset="$2"
+            gh release view "$tag" --repo "$GITHUB_REPOSITORY" --json assets --jq '.assets[].name' 2>/dev/null \
+              | grep -Fxq "$asset" \
+              && gh release view "$tag" --repo "$GITHUB_REPOSITORY" --json assets --jq '.assets[].name' 2>/dev/null \
+              | grep -Fxq 'SHA256SUMS'
+          }
+
+          retry_gh() {
+            local attempt
+            for attempt in 1 2 3 4; do
+              if "$@"; then return 0; fi
+              [[ "$attempt" == "4" ]] && return 1
+              sleep $((attempt * 5))
+            done
+          }
+
+          publish_component() {
+            local kind="$1" hash="$2" image="$3" tag="$4" asset="$5"
+            local dir="component-${kind}"
+            if release_has_assets "$tag" "$asset"; then
+              echo "Fallback already exists for ${kind} ${hash}; skipping archive creation"
+              return 0
+            fi
+
+            rm -rf "$dir"
+            mkdir -p "$dir"
+            docker save "$image" | zstd -T0 -10 -o "$dir/$asset"
+            (cd "$dir" && sha256sum "$asset" > SHA256SUMS)
+
+            if gh release view "$tag" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+              retry_gh gh release upload "$tag" "$dir/$asset" "$dir/SHA256SUMS" \
+                --clobber --repo "$GITHUB_REPOSITORY"
+            else
+              retry_gh gh release create "$tag" "$dir/$asset" "$dir/SHA256SUMS" \
+                --target "$GITHUB_SHA" \
+                --prerelease \
+                --title "Otclick ${kind} component ${hash:0:12}" \
+                --notes "Fallback Linux amd64 image archive for immutable ${kind} component hash ${hash}." \
+                --repo "$GITHUB_REPOSITORY"
+            fi
+          }
+
+          publish_component backend "$BACKEND_HASH" aiautoclicker-backend:latest \
+            "$BACKEND_FALLBACK_TAG" otclick-backend-linux-amd64.tar.zst
+          publish_component frontend "$FRONTEND_HASH" aiautoclicker-frontend:latest \
+            "$FRONTEND_FALLBACK_TAG" otclick-frontend-linux-amd64.tar.zst
+
+      - name: Package exact-commit manifest
+        id: package
+        run: |
+          set -euo pipefail
           mkdir -p artifacts
-
-          docker save \
-            aiautoclicker-backend:latest \
-            aiautoclicker-frontend:latest \
-            | zstd -T0 -10 -o artifacts/otclick-images-linux-amd64.tar.zst
-
-          cp install.sh install-one.sh docker-compose.yml artifacts/
+          cp install.sh install-one.sh install-update.sh docker-compose.yml artifacts/
 
           python3 - <<'PY'
           import json
           import os
-          import platform
           from pathlib import Path
 
           out = Path("artifacts")
           manifest = {
-              "schema_version": 1,
-              "repository": os.environ.get("GITHUB_REPOSITORY"),
-              "git_sha": os.environ.get("GITHUB_SHA"),
-              "git_ref": os.environ.get("GITHUB_REF"),
-              "workflow_run_id": os.environ.get("GITHUB_RUN_ID"),
+              "schema_version": 2,
+              "repository": os.environ["GITHUB_REPOSITORY"],
+              "git_sha": os.environ["GITHUB_SHA"],
+              "git_ref": os.environ["GITHUB_REF"],
+              "workflow_run_id": os.environ["GITHUB_RUN_ID"],
               "architecture": "linux/amd64",
-              "runner_machine": platform.machine(),
-              "docker_images": [
-                  "aiautoclicker-backend:latest",
-                  "aiautoclicker-frontend:latest",
-              ],
-              "bundle": "otclick-images-linux-amd64.tar.zst",
+              "components": {
+                  "backend": {
+                      "hash": os.environ["BACKEND_HASH"],
+                      "image": os.environ["BACKEND_IMAGE"],
+                      "fallback_tag": os.environ["BACKEND_FALLBACK_TAG"],
+                      "fallback_asset": "otclick-backend-linux-amd64.tar.zst",
+                  },
+                  "frontend": {
+                      "hash": os.environ["FRONTEND_HASH"],
+                      "image": os.environ["FRONTEND_IMAGE"],
+                      "fallback_tag": os.environ["FRONTEND_FALLBACK_TAG"],
+                      "fallback_asset": "otclick-frontend-linux-amd64.tar.zst",
+                  },
+              },
+              "hashes": {
+                  "compose": os.environ["COMPOSE_HASH"],
+                  "infra": os.environ["INFRA_HASH"],
+                  "migrations": os.environ["MIGRATIONS_HASH"],
+              },
           }
           (out / "manifest.json").write_text(
               json.dumps(manifest, ensure_ascii=False, indent=2) + "\n",
@@ -94,13 +256,11 @@ jobs:
           PY
 
           (cd artifacts && sha256sum \
-            otclick-images-linux-amd64.tar.zst \
-            install.sh install-one.sh docker-compose.yml manifest.json \
+            manifest.json install.sh install-one.sh install-update.sh docker-compose.yml \
             > SHA256SUMS)
+          echo "metadata_size=$(du -sh artifacts | cut -f1)" >> "$GITHUB_OUTPUT"
 
-          echo "bundle_size=$(du -h artifacts/otclick-images-linux-amd64.tar.zst | cut -f1)" >> "$GITHUB_OUTPUT"
-
-      - name: Upload Linux install artifact
+      - name: Upload exact-commit metadata artifact
         id: upload
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
@@ -108,31 +268,44 @@ jobs:
           path: artifacts/
           if-no-files-found: error
           retention-days: 7
-          # The Docker bundle is already zstd-compressed; recompressing it only
-          # wastes runner time and does not materially reduce artifact size.
           compression-level: 0
 
-      - name: Publish public prerelease install assets
+      - name: Publish exact-SHA manifest prerelease
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
           tag="install-${GITHUB_SHA}"
-          title="Otclick install bundle ${GITHUB_SHA:0:12}"
-          notes="Prebuilt Linux amd64 install bundle for commit ${GITHUB_SHA}. Generated by GitHub Actions; no runtime secrets are included."
+          title="Otclick incremental install ${GITHUB_SHA:0:12}"
+          notes="Exact-SHA incremental install manifest. Application images are content-addressed components; no runtime secrets are included."
+
+          retry_gh() {
+            local attempt
+            for attempt in 1 2 3 4; do
+              if "$@"; then return 0; fi
+              [[ "$attempt" == "4" ]] && return 1
+              sleep $((attempt * 5))
+            done
+          }
 
           if gh release view "$tag" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
-            gh release upload "$tag" \
-              artifacts/otclick-images-linux-amd64.tar.zst \
+            retry_gh gh release upload "$tag" \
               artifacts/manifest.json \
               artifacts/SHA256SUMS \
+              artifacts/install.sh \
+              artifacts/install-one.sh \
+              artifacts/install-update.sh \
+              artifacts/docker-compose.yml \
               --clobber \
               --repo "$GITHUB_REPOSITORY"
           else
-            gh release create "$tag" \
-              artifacts/otclick-images-linux-amd64.tar.zst \
+            retry_gh gh release create "$tag" \
               artifacts/manifest.json \
               artifacts/SHA256SUMS \
+              artifacts/install.sh \
+              artifacts/install-one.sh \
+              artifacts/install-update.sh \
+              artifacts/docker-compose.yml \
               --target "$GITHUB_SHA" \
               --prerelease \
               --title "$title" \
@@ -143,12 +316,15 @@ jobs:
       - name: Publish artifact summary
         run: |
           {
-            echo "### Otclick Linux install artifact"
+            echo "### Otclick incremental Linux install"
             echo
             echo "- Commit: \`${GITHUB_SHA}\`"
-            echo "- Bundle: \`otclick-images-linux-amd64.tar.zst\` (${{ steps.package.outputs.bundle_size }})"
-            echo "- Actions artifact: [download](${{ steps.upload.outputs.artifact-url }})"
+            echo "- Backend component: \`${BACKEND_HASH}\`"
+            echo "- Frontend component: \`${FRONTEND_HASH}\`"
+            echo "- Backend image: \`${BACKEND_IMAGE}\`"
+            echo "- Frontend image: \`${FRONTEND_IMAGE}\`"
+            echo "- Exact release metadata: ${{ steps.package.outputs.metadata_size }}"
+            echo "- Actions metadata artifact: [download](${{ steps.upload.outputs.artifact-url }})"
             echo "- Public prerelease: https://github.com/${GITHUB_REPOSITORY}/releases/tag/install-${GITHUB_SHA}"
-            echo "- SHA256: included in \`SHA256SUMS\`"
-            echo "- Actions artifact retention: 7 days"
+            echo "- Unchanged components are not downloaded by install-update.sh"
           } >> "$GITHUB_STEP_SUMMARY"
