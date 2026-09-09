@@ -72,6 +72,13 @@ async def test_web_login_entrypoint_waits_for_domcontentloaded_and_form():
         async def wait_for_selector(self, selector, **kwargs):
             self.selector_args = (selector, kwargs)
 
+        def locator(self, _selector):
+            class Locator:
+                async def count(self):
+                    return 0
+
+            return Locator()
+
     page = Page()
     await _open_web_login(page)
 
