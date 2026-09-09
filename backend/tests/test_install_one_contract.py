@@ -3,130 +3,153 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[2]
 
 
-def _wrapper() -> str:
+def _installer() -> str:
+    return (ROOT / "install.sh").read_text(encoding="utf-8")
+
+
+def _shim() -> str:
     return (ROOT / "install-one.sh").read_text(encoding="utf-8")
 
 
 def test_one_command_installer_preserves_existing_docker_stack():
-    wrapper = _wrapper()
+    installer = _installer()
 
-    assert 'docker compose version >/dev/null 2>&1' in wrapper
-    assert 'existing Docker + Compose detected; package stack left untouched' in wrapper
-    assert 'apt-get install -y git curl ca-certificates python3 docker.io' in wrapper  # old block matched for replacement
-    assert 'apt-get install -y git curl ca-certificates python3 zstd >>"$LOG_FILE" 2>&1' in wrapper
+    assert 'docker compose version >/dev/null 2>&1' in installer
+    assert 'existing Docker + Compose detected; package stack left untouched' in installer
+    assert 'apt-get install -y git curl ca-certificates python3 zstd >>"$LOG_FILE" 2>&1' in installer
 
 
 def test_one_command_installer_keeps_docker_package_families_separate():
-    wrapper = _wrapper()
+    installer = _installer()
 
-    assert 'docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin' in wrapper
-    assert 'apt-get install -y docker.io docker-compose-v2' in wrapper
-    assert 'Docker CE/containerd.io detected; installing matching Compose plugin' in wrapper
-    assert 'Ubuntu docker.io detected; installing matching Compose v2 package' in wrapper
+    assert 'docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin' in installer
+    assert 'apt-get install -y docker.io docker-compose-v2' in installer
+    assert 'Docker CE/containerd.io detected; installing matching Compose plugin' in installer
+    assert 'Ubuntu docker.io detected; installing matching Compose v2 package' in installer
 
 
 def test_one_command_installer_hides_noisy_package_and_docker_progress():
-    wrapper = _wrapper()
+    installer = _installer()
 
-    assert 'apt-get update >>"$LOG_FILE" 2>&1' in wrapper
-    assert 'docker compose pull db migrate auth rest realtime storage storage-init kong caddy >>"$LOG_FILE" 2>&1' in wrapper
-    assert 'docker compose build api frontend >>"$LOG_FILE" 2>&1' in wrapper  # emergency override only
-    assert 'details -> $LOG_FILE' in wrapper
-    assert 'trap - ERR' in wrapper
+    assert 'apt-get update >>"$LOG_FILE" 2>&1' in installer
+    assert 'docker compose pull db migrate auth rest realtime storage storage-init kong caddy >>"$LOG_FILE" 2>&1' in installer
+    assert 'docker compose build api frontend >>"$LOG_FILE" 2>&1' in installer
+    assert 'details -> $LOG_FILE' in installer
+    assert 'trap - ERR' in installer
 
 
 def test_one_command_installer_prints_compose_failure_diagnostics_without_tailing_its_own_log():
-    wrapper = _wrapper()
+    installer = _installer()
 
-    assert 'diagnose_stack() {' in wrapper
-    assert 'compose_or_diagnose() {' in wrapper
-    assert 'docker compose ps -a >&2' in wrapper
-    assert 'docker compose logs --no-color --tail=120 "$service" >&2' in wrapper
-    assert "state_error=\"$(docker inspect -f '{{.State.Error}}'" in wrapper
-    assert 'error=${state_error:-none}' in wrapper
-    assert 'docker compose command failed:' in wrapper
-    assert 'tail -n 30 "$LOG_FILE"' not in wrapper
+    assert 'diagnose_stack() {' in installer
+    assert 'compose_or_diagnose() {' in installer
+    assert 'docker compose ps -a >&2' in installer
+    assert 'docker compose logs --no-color --tail=120 "$service" >&2' in installer
+    assert "state_error=\"$(docker inspect -f '{{.State.Error}}'" in installer
+    assert 'error=${state_error:-none}' in installer
+    assert 'docker compose command failed:' in installer
+    assert 'tail -n 30 "$LOG_FILE"' not in installer
 
 
 def test_one_command_installer_uses_exact_sha_public_prerelease_by_default():
-    wrapper = _wrapper()
+    installer = _installer()
 
-    assert 'git_sha="$(git rev-parse HEAD)"' in wrapper
-    assert 'release_tag="install-${git_sha}"' in wrapper
-    assert 'https://github.com/gest0r1/Otclick-hh/releases/download/${release_tag}' in wrapper
-    assert '"${release_base}/manifest.json"' in wrapper
-    assert '"${release_base}/SHA256SUMS"' in wrapper
-    assert 'manifest.get("git_sha", "")' in wrapper
-    assert 'sha256sum "$bundle_file"' in wrapper
-    assert 'zstd -d -c "$bundle_file" | docker load' in wrapper
+    assert 'git_sha="$(git rev-parse HEAD)"' in installer
+    assert 'release_tag="install-${git_sha}"' in installer
+    assert 'https://github.com/gest0r1/Otclick-hh/releases/download/${release_tag}' in installer
+    assert '"${release_base}/manifest.json"' in installer
+    assert '"${release_base}/SHA256SUMS"' in installer
+    assert 'manifest.get("git_sha", "")' in installer
+    assert 'sha256sum "$bundle_file"' in installer
+    assert 'zstd -d -c "$bundle_file" | docker load' in installer
 
 
 def test_one_command_installer_does_not_build_locally_unless_explicitly_overridden():
-    wrapper = _wrapper()
+    installer = _installer()
 
-    assert 'OTCLICK_ALLOW_LOCAL_BUILD:-0' in wrapper
-    assert '[7/8] emergency local build enabled' in wrapper
-    assert 'Local build is intentionally disabled on low-memory hosts.' in wrapper
-    assert 'Emergency override: OTCLICK_ALLOW_LOCAL_BUILD=1' in wrapper
-    assert '[7/8] downloading prebuilt Otclick images (~1 GiB, no local build)' in wrapper
+    assert 'OTCLICK_ALLOW_LOCAL_BUILD:-0' in installer
+    assert '[7/8] emergency local build enabled' in installer
+    assert 'Local build is intentionally disabled on low-memory hosts.' in installer
+    assert 'Emergency override: OTCLICK_ALLOW_LOCAL_BUILD=1' in installer
+    assert '[7/8] downloading prebuilt Otclick images (~1 GiB, no local build)' in installer
 
 
 def test_one_command_installer_never_pulls_local_backend_as_external_image():
-    wrapper = _wrapper()
+    installer = _installer()
 
-    assert 'docker compose pull db migrate auth rest realtime storage storage-init kong caddy' in wrapper
-    assert 'docker compose pull api' not in wrapper
-    assert 'docker compose pull worker' not in wrapper
-    assert 'docker compose up -d --build' in wrapper  # old start_stack block matched exactly
+    assert 'docker compose pull db migrate auth rest realtime storage storage-init kong caddy' in installer
+    assert 'docker compose pull api' not in installer
+    assert 'docker compose pull worker' not in installer
 
 
 def test_installer_starts_infra_then_forces_only_current_app_images():
-    wrapper = _wrapper()
+    installer = _installer()
 
-    assert 'compose_or_diagnose up -d --no-build --pull never \\\n    db migrate auth rest realtime storage storage-init kong' in wrapper
-    assert '--force-recreate --no-deps api frontend' in wrapper
-    assert '--force-recreate --no-deps worker' in wrapper
-    assert '--force-recreate --no-deps worker caddy' not in wrapper
-    assert 'compose_or_diagnose up -d --no-build --pull never --no-deps caddy' in wrapper
-    assert 'Caddy contains no application code' in wrapper
-    assert 'Keep an already-running proxy stable' in wrapper
-    assert 'Docker Compose does not reliably recreate an existing container' in wrapper
-    assert 'without bouncing DB' in wrapper
+    assert 'compose_or_diagnose up -d --no-build --pull never \\\n    db migrate auth rest realtime storage storage-init kong' in installer
+    assert '--force-recreate --no-deps api frontend' in installer
+    assert '--force-recreate --no-deps worker' in installer
+    assert '--force-recreate --no-deps worker caddy' not in installer
+    assert 'compose_or_diagnose up -d --no-build --pull never --no-deps caddy' in installer
+    assert 'Caddy contains no application code' in installer
+    assert 'Keep an already-running proxy stable' in installer
+    assert 'Docker Compose does not reliably recreate an existing container' in installer
+    assert 'without bouncing DB' in installer
 
 
 def test_candidate_overrides_stay_private_but_readable_by_container_user():
-    wrapper = _wrapper()
+    installer = _installer()
 
-    assert 'chown 1000:1000 "$CANDIDATE_LOCAL_DIR"' in wrapper
-    assert 'chmod 700 "$CANDIDATE_LOCAL_DIR"' in wrapper
-    assert 'chmod 600 "$CANDIDATE_LOCAL_DIR/candidate_profile.json"' in wrapper
-    assert 'backend/Dockerfile runs the API/worker as uid:gid 1000:1000' in wrapper
+    assert 'chown 1000:1000 "$CANDIDATE_LOCAL_DIR"' in installer
+    assert 'chmod 700 "$CANDIDATE_LOCAL_DIR"' in installer
+    assert 'chmod 600 "$CANDIDATE_LOCAL_DIR/candidate_profile.json"' in installer
+    assert 'backend/Dockerfile runs the API/worker as uid:gid 1000:1000' in installer
 
 
 def test_candidate_reload_uses_runtime_mount_without_building_images():
-    wrapper = _wrapper()
+    installer = _installer()
 
-    assert "docker compose exec -T api python scripts/load_candidate_data.py" in wrapper
-    assert "docker compose up -d --build api worker && docker compose exec" in wrapper  # old line matched for replacement
+    assert "docker compose exec -T api python scripts/load_candidate_data.py" in installer
+    assert "docker compose up -d --build api worker && docker compose exec" not in installer
 
 
-def test_one_command_installer_refuses_blind_patch_if_base_installer_changes():
-    wrapper = _wrapper()
+def test_legacy_install_one_is_only_a_compatibility_shim():
+    shim = _shim()
 
-    assert 'refusing an unsafe blind patch' in wrapper
-    assert 'exec env OTCLICK_REF="$REF" bash "$TMP_INSTALL"' in wrapper
+    assert 'The canonical installer is now install.sh.' in shim
+    assert 'RAW_URL="https://raw.githubusercontent.com/gest0r1/Otclick-hh/${REF}/install.sh"' in shim
+    assert 'exec env OTCLICK_REF="$REF" bash "$TMP_INSTALL" "$@"' in shim
+    assert 'replace_once(' not in shim
+
+
+def test_installer_repairs_known_obsolete_local_wrapper_change_but_not_other_files():
+    installer = _installer()
+
+    assert 'git status --porcelain --untracked-files=no -- install-one.sh' in installer
+    assert 'restoring obsolete local install-one.sh changes' in installer
+    assert 'git restore --source=HEAD --staged --worktree -- install-one.sh' in installer
+    assert 'tracked local changes that block update:' in installer
 
 
 def test_installer_auto_switches_to_external_proxy_when_80_443_are_owned_elsewhere():
-    wrapper = _wrapper()
+    installer = _installer()
 
-    assert "foreign_public_proxy()" in wrapper
-    assert "OTCLICK_PROXY_MODE external" in wrapper
-    assert 'CADDY_HTTP_BIND "127.0.0.1:${OTCLICK_INTERNAL_HTTP_PORT:-18080}"' in wrapper
-    assert 'CADDY_HTTPS_BIND "127.0.0.1:${OTCLICK_INTERNAL_HTTPS_PORT:-18443}"' in wrapper
-    assert 'env_set CADDY_SITE_ADDRESS ":80"' in wrapper
-    assert "external reverse proxy detected on host 80/443" in wrapper
-    assert "external proxy action required" in wrapper
+    assert "foreign_public_proxy()" in installer
+    assert "OTCLICK_PROXY_MODE external" in installer
+    assert 'CADDY_HTTP_BIND "127.0.0.1:${OTCLICK_INTERNAL_HTTP_PORT:-18080}"' in installer
+    assert 'CADDY_HTTPS_BIND "127.0.0.1:${OTCLICK_INTERNAL_HTTPS_PORT:-18443}"' in installer
+    assert 'env_set CADDY_SITE_ADDRESS ":80"' in installer
+    assert "external reverse proxy detected on host 80/443" in installer
+    assert "external proxy action required" in installer
+
+
+def test_installer_cleans_only_superseded_otclick_app_images():
+    installer = _installer()
+
+    assert 'remove_previous_app_image() {' in installer
+    assert 'docker image rm "$old_id"' in installer
+    assert 'remove_previous_app_image "$old_backend_image" "$current_backend_image" backend' in installer
+    assert 'remove_previous_app_image "$old_frontend_image" "$current_frontend_image" frontend' in installer
+    assert 'docker image prune -a' not in installer
 
 
 def test_compose_caddy_host_bindings_are_runtime_configurable():
