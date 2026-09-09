@@ -16,6 +16,8 @@ jobs:
       - name: Validate installer and compose contract
         run: |
           bash -n install.sh
+          bash -n install-one.sh
+          bash -n install-update.sh
           python3 -m py_compile infra/bootstrap.py backend/scripts/load_candidate_data.py
           python3 infra/bootstrap.py --openai-key ci-placeholder
           docker compose config >/dev/null
