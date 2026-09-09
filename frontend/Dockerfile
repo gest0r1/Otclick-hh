@@ -1,21 +1,27 @@
 # syntax=docker/dockerfile:1.7
-FROM node:22-slim AS base
+FROM node:22-slim AS deps
 WORKDIR /app
-
-# The production image is intentionally install-agnostic. Supabase URL/key and
-# API origin are supplied at runtime: server-side through container env and
-# browser-side through same-origin + a public config cookie set by proxy.ts.
-# Google auth remains disabled in the single-user prebuilt image by default.
-ENV NEXT_PUBLIC_GOOGLE_AUTH_ENABLED=false
-
 COPY package.json package-lock.json ./
 RUN npm ci
 
+FROM node:22-slim AS builder
+WORKDIR /app
+ENV NEXT_PUBLIC_GOOGLE_AUTH_ENABLED=false
+COPY --from=deps /app/node_modules ./node_modules
 COPY . .
 RUN npm run build
 
-RUN useradd -m app && chown -R app:app /app
-USER app
+FROM node:22-slim AS runner
+WORKDIR /app
+ENV NODE_ENV=production \
+    NEXT_PUBLIC_GOOGLE_AUTH_ENABLED=false \
+    HOSTNAME=0.0.0.0 \
+    PORT=3000
 
+RUN useradd -m -u 1000 app
+COPY --from=builder --chown=app:app /app/.next/standalone ./
+COPY --from=builder --chown=app:app /app/.next/static ./.next/static
+
+USER app
 EXPOSE 3000
-CMD ["npm", "start"]
+CMD ["node", "server.js"]
