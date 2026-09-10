@@ -15,6 +15,8 @@ _SOURCE_COLUMNS = (
     "last_checked_at,last_success_at,last_error,created_at,updated_at"
 )
 
+_OUTCOME_BATCH_SIZE = 50
+
 
 def _now() -> str:
     return datetime.now(UTC).isoformat()
@@ -49,13 +51,16 @@ def _outcome_counts(source_id: str) -> dict[str, int]:
     vacancy_ids = [str(row["vacancy_id"]) for row in (links.data or []) if row.get("vacancy_id")]
     if not vacancy_ids:
         return {"hard_filtered": 0, "score_error": 0}
-    rows = (
-        service_client.table("vacancy_pipeline")
-        .select("id,status,hard_filter_reason")
-        .in_("id", vacancy_ids)
-        .execute()
-    )
-    data = rows.data or []
+    data: list[dict] = []
+    for start in range(0, len(vacancy_ids), _OUTCOME_BATCH_SIZE):
+        batch = vacancy_ids[start : start + _OUTCOME_BATCH_SIZE]
+        rows = (
+            service_client.table("vacancy_pipeline")
+            .select("id,status,hard_filter_reason")
+            .in_("id", batch)
+            .execute()
+        )
+        data.extend(rows.data or [])
     return {
         "hard_filtered": sum(1 for row in data if row.get("hard_filter_reason")),
         "score_error": sum(1 for row in data if row.get("status") == "score_error"),
