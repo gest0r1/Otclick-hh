@@ -18,6 +18,25 @@ else
   TARGET_DIR="$DEFAULT_TARGET_DIR"
 fi
 
+# The public one-command entry point stays install.sh. Existing installations
+# are delegated immediately to the incremental updater so they never download
+# the combined fresh-install image bundle and never build application images on
+# the production server.
+if [[ -d "$TARGET_DIR/.git" && "${OTCLICK_FULL_INSTALL:-0}" != "1" ]]; then
+  need curl
+  tmp_update="$(mktemp /tmp/otclick-update.XXXXXX.sh)"
+  trap 'rm -f "$tmp_update"' EXIT
+  update_url="https://raw.githubusercontent.com/gest0r1/Otclick-hh/${BRANCH}/install-update.sh"
+  log "Existing installation detected in $TARGET_DIR; using incremental updater"
+  curl -fsSL "$update_url" -o "$tmp_update"
+  chmod 700 "$tmp_update"
+  exec env \
+    OTCLICK_REF="$BRANCH" \
+    OTCLICK_DIR="$TARGET_DIR" \
+    OTCLICK_REPO_SLUG="$RELEASE_REPO" \
+    bash "$tmp_update"
+fi
+
 need git
 need python3
 need curl
@@ -114,7 +133,7 @@ PY
     die "Artifact SHA mismatch: manifest=$manifest_sha checkout=$git_sha"
   fi
 
-  log "Downloading prebuilt backend/frontend images"
+  log "Downloading fresh-install prebuilt backend/frontend images"
   curl -fL --retry 5 --retry-delay 3 --retry-all-errors \
     "${release_base}/SHA256SUMS" -o "$tmpdir/SHA256SUMS"
   curl -fL --retry 5 --retry-delay 3 --retry-all-errors \
@@ -176,7 +195,7 @@ compose up -d --no-build --pull never --force-recreate api frontend worker
 log "Stack status"
 compose ps -a
 
-printf '\nOtclick is installed/updated in: %s\n' "$TARGET_DIR"
+printf '\nOtclick is installed in: %s\n' "$TARGET_DIR"
 printf 'Application images: prebuilt by GitHub Actions; local Docker build: disabled.\n'
 printf 'Open: http://localhost:3000\n'
-printf 'Run this same installer command again to update to the latest main.\n'
+printf 'Run this same installer command again for an incremental update.\n'
