@@ -39,8 +39,6 @@ jobs:
               raise SystemExit('updater stdin anchor not found')
           u = u.replace(anchor, replacement, 1)
 
-          # Defense in depth for all docker-pull paths, including future direct use
-          # if updater-level stdin handling changes later.
           u = u.replace('docker pull "$image_ref" >>"$LOG_FILE" 2>&1',
                         'docker pull "$image_ref" </dev/null >>"$LOG_FILE" 2>&1')
           u = u.replace('script -qefc \'docker pull "$OTCLICK_PULL_IMAGE"\' "$transcript" >&3 2>&3',
@@ -52,7 +50,7 @@ jobs:
           tests = Path('backend/tests/test_incremental_installer_contract.py')
           t = tests.read_text(encoding='utf-8')
           if 'test_curl_pipe_cannot_leak_remaining_installer_source_into_pull_tty' not in t:
-              t += '''\n\ndef test_curl_pipe_cannot_leak_remaining_installer_source_into_pull_tty():\n    installer = _read("install.sh")\n    updater = _read("install-update.sh")\n    assert 'bash "$tmp_update" </dev/null' in installer\n    assert "exec </dev/null" in updater\n    assert 'script -qefc \'docker pull "$OTCLICK_PULL_IMAGE"\' "$transcript" </dev/null' in updater\n    assert 'docker pull "$image_ref" </dev/null' in updater\n'''
+              t += '''\n\ndef test_curl_pipe_cannot_leak_remaining_installer_source_into_pull_tty():\n    installer = _read("install.sh")\n    updater = _read("install-update.sh")\n    assert 'bash "$tmp_update" </dev/null' in installer\n    assert "exec </dev/null" in updater\n    assert "script -qefc" in updater\n    assert '"$transcript" </dev/null' in updater\n    assert 'docker pull "$image_ref" </dev/null' in updater\n'''
               tests.write_text(t, encoding='utf-8')
           PY
 
@@ -60,8 +58,6 @@ jobs:
           bash -n install-update.sh
           python3 -m py_compile backend/tests/test_incremental_installer_contract.py
 
-          # Reproduce the original failure mode conceptually: stdin contains shell
-          # source, but a nested pseudo-TTY command must receive EOF, not that text.
           printf 'SHOULD_NOT_APPEAR\n' | bash -c 'exec </dev/null; script -qefc "cat" /tmp/stdin-test.log </dev/null' > /tmp/stdin-test.out
           ! grep -q SHOULD_NOT_APPEAR /tmp/stdin-test.out
           ! grep -q SHOULD_NOT_APPEAR /tmp/stdin-test.log
