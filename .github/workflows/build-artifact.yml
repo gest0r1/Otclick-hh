@@ -1,4 +1,4 @@
-name: Build prebuilt install images
+name: Build incremental Linux install components
 
 on:
   workflow_dispatch:
@@ -9,91 +9,365 @@ on:
 
 permissions:
   contents: write
+  packages: write
 
+# Existing installations consume the v2 manifest and pull only changed
+# content-addressed images from GHCR. GitHub Release component archives are a
+# fallback. The combined bundle is retained only for genuinely fresh installs.
 concurrency:
-  group: prebuilt-install-${{ github.ref }}
+  group: incremental-install-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
   build-linux-amd64:
+    name: Build and verify incremental Linux amd64 components
     runs-on: ubuntu-24.04
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Validate installer and production Compose contract
+      - name: Validate installers and production Compose contract
         run: |
           set -euo pipefail
           bash -n install.sh
+          bash -n install-update.sh
           sh -n infra/frontend-runtime-env.sh
           python3 infra/bootstrap.py --openai-key ci-placeholder
           docker compose -f docker-compose.yml -f docker-compose.prebuilt.yml config >/dev/null
           rm -f .env
 
-      - name: Build backend image
+      - name: Compute content hashes
         run: |
           set -euo pipefail
-          docker build \
-            -f backend/Dockerfile \
-            -t aiautoclicker-backend:latest \
-            .
+          python3 - <<'PY' >> "$GITHUB_ENV"
+          from __future__ import annotations
 
-      - name: Build generic frontend image
-        run: |
-          set -euo pipefail
-          docker build \
-            --build-arg NEXT_PUBLIC_SUPABASE_URL='https://otclick-runtime-supabase.invalid' \
-            --build-arg NEXT_PUBLIC_SUPABASE_ANON_KEY='__OTCLICK_SUPABASE_ANON_KEY__' \
-            --build-arg NEXT_PUBLIC_API_URL='https://otclick-runtime-api.invalid' \
-            --build-arg NEXT_PUBLIC_GOOGLE_AUTH_ENABLED='__OTCLICK_GOOGLE_AUTH_ENABLED__' \
-            -f frontend/Dockerfile \
-            -t aiautoclicker-frontend:latest \
-            frontend
+          import hashlib
+          from pathlib import Path
+          import subprocess
 
-      - name: Verify frontend placeholders are present
-        run: |
-          set -euo pipefail
-          cid="$(docker create aiautoclicker-frontend:latest)"
-          tmpdir="$(mktemp -d)"
-          trap 'docker rm -f "$cid" >/dev/null 2>&1 || true; rm -rf "$tmpdir"' EXIT
-          docker cp "$cid":/app/.next "$tmpdir/.next"
-          grep -RIl 'https://otclick-runtime-supabase.invalid' "$tmpdir/.next" >/dev/null
-          grep -RIl '__OTCLICK_SUPABASE_ANON_KEY__' "$tmpdir/.next" >/dev/null
-          grep -RIl 'https://otclick-runtime-api.invalid' "$tmpdir/.next" >/dev/null
+          pathspecs = {
+              "BACKEND_HASH": [
+                  ".dockerignore",
+                  "backend/Dockerfile",
+                  "backend/app",
+                  "backend/worker_main.py",
+                  "backend/data",
+                  "backend/scripts",
+                  "pyproject.toml",
+                  "uv.lock",
+              ],
+              "FRONTEND_HASH": ["frontend"],
+              "COMPOSE_HASH": ["docker-compose.yml", "docker-compose.prebuilt.yml"],
+              "INFRA_HASH": ["infra"],
+              "MIGRATIONS_HASH": ["infra/supabase/migrations"],
+          }
 
-      - name: Package images and manifest
+          def content_hash(specs: list[str]) -> str:
+              raw = subprocess.check_output(["git", "ls-files", "-z", "--", *specs])
+              files = sorted({p.decode("utf-8") for p in raw.split(b"\0") if p})
+              h = hashlib.sha256()
+              for rel in files:
+                  path = Path(rel)
+                  if not path.is_file():
+                      continue
+                  h.update(rel.encode("utf-8"))
+                  h.update(b"\0")
+                  h.update(path.read_bytes())
+                  h.update(b"\0")
+              return h.hexdigest()
+
+          for key, specs in pathspecs.items():
+              print(f"{key}={content_hash(specs)}")
+          PY
+
+      - name: Login to GitHub Container Registry
         run: |
           set -euo pipefail
-          mkdir -p release
+          echo "${{ github.token }}" | docker login ghcr.io -u "$GITHUB_ACTOR" --password-stdin
+
+      - name: Reuse or publish immutable component images
+        run: |
+          set -euo pipefail
+          owner="${GITHUB_REPOSITORY_OWNER,,}"
+          BACKEND_TAG="ghcr.io/${owner}/otclick-hh-backend:component-${BACKEND_HASH}"
+          FRONTEND_TAG="ghcr.io/${owner}/otclick-hh-frontend:component-${FRONTEND_HASH}"
+
+          if docker manifest inspect "$BACKEND_TAG" >/dev/null 2>&1; then
+            echo "Reusing backend component ${BACKEND_HASH}"
+          else
+            echo "Building backend component ${BACKEND_HASH}"
+            docker build \
+              --label "org.opencontainers.image.source=https://github.com/${GITHUB_REPOSITORY}" \
+              -f backend/Dockerfile \
+              -t "$BACKEND_TAG" \
+              .
+            docker push "$BACKEND_TAG"
+          fi
+
+          if docker manifest inspect "$FRONTEND_TAG" >/dev/null 2>&1; then
+            echo "Reusing frontend component ${FRONTEND_HASH}"
+          else
+            echo "Building generic frontend component ${FRONTEND_HASH}"
+            docker build \
+              --label "org.opencontainers.image.source=https://github.com/${GITHUB_REPOSITORY}" \
+              --build-arg NEXT_PUBLIC_SUPABASE_URL='https://otclick-runtime-supabase.invalid' \
+              --build-arg NEXT_PUBLIC_SUPABASE_ANON_KEY='__OTCLICK_SUPABASE_ANON_KEY__' \
+              --build-arg NEXT_PUBLIC_API_URL='https://otclick-runtime-api.invalid' \
+              --build-arg NEXT_PUBLIC_GOOGLE_AUTH_ENABLED='__OTCLICK_GOOGLE_AUTH_ENABLED__' \
+              -f frontend/Dockerfile \
+              -t "$FRONTEND_TAG" \
+              frontend
+            docker push "$FRONTEND_TAG"
+          fi
+
+          docker pull "$BACKEND_TAG"
+          docker pull "$FRONTEND_TAG"
+          docker tag "$BACKEND_TAG" aiautoclicker-backend:latest
+          docker tag "$FRONTEND_TAG" aiautoclicker-frontend:latest
+
+          BACKEND_IMAGE="$(docker image inspect "$BACKEND_TAG" --format '{{index .RepoDigests 0}}')"
+          FRONTEND_IMAGE="$(docker image inspect "$FRONTEND_TAG" --format '{{index .RepoDigests 0}}')"
+          [[ "$BACKEND_IMAGE" == ghcr.io/*@sha256:* ]]
+          [[ "$FRONTEND_IMAGE" == ghcr.io/*@sha256:* ]]
+
+          {
+            echo "BACKEND_TAG=$BACKEND_TAG"
+            echo "FRONTEND_TAG=$FRONTEND_TAG"
+            echo "BACKEND_IMAGE=$BACKEND_IMAGE"
+            echo "FRONTEND_IMAGE=$FRONTEND_IMAGE"
+            echo "BACKEND_FALLBACK_TAG=component-backend-${BACKEND_HASH}"
+            echo "FRONTEND_FALLBACK_TAG=component-frontend-${FRONTEND_HASH}"
+          } >> "$GITHUB_ENV"
+
+      - name: Smoke test frontend runtime configuration
+        run: |
+          set -euo pipefail
+          cid="$(docker run -d --rm \
+            -p 127.0.0.1:13000:3000 \
+            -e NEXT_PUBLIC_SUPABASE_URL=http://127.0.0.1:54321 \
+            -e NEXT_PUBLIC_SUPABASE_ANON_KEY=ci-anon-key \
+            -e NEXT_PUBLIC_API_URL=http://127.0.0.1:8000 \
+            -e NEXT_PUBLIC_GOOGLE_AUTH_ENABLED=false \
+            -e SUPABASE_URL=http://127.0.0.1:54321 \
+            -v "$PWD/infra/frontend-runtime-env.sh:/opt/otclick/frontend-runtime-env.sh:ro" \
+            --entrypoint sh \
+            aiautoclicker-frontend:latest \
+            /opt/otclick/frontend-runtime-env.sh)"
+          trap 'docker rm -f "$cid" >/dev/null 2>&1 || true' EXIT
+
+          ready=0
+          for attempt in $(seq 1 45); do
+            if curl -fsS --max-time 2 http://127.0.0.1:13000/ -o /tmp/otclick-frontend.html; then
+              ready=1
+              break
+            fi
+            sleep 1
+          done
+          if [[ "$ready" != "1" ]]; then
+            docker logs "$cid" >&2 || true
+            exit 1
+          fi
+          grep -qi 'otclick' /tmp/otclick-frontend.html
+          if docker exec "$cid" sh -c "grep -RIl 'otclick-runtime-supabase.invalid\|__OTCLICK_SUPABASE_ANON_KEY__\|otclick-runtime-api.invalid\|__OTCLICK_GOOGLE_AUTH_ENABLED__' /app/.next" | grep -q .; then
+            echo 'runtime placeholders remain in frontend bundle' >&2
+            exit 1
+          fi
+
+      - name: Verify anonymous GHCR pulls
+        run: |
+          set -euo pipefail
+          docker logout ghcr.io >/dev/null 2>&1 || true
+          # Public production servers do not have a GitHub token. This test is
+          # mandatory: if it fails, the updater would fall back to slow Release
+          # assets and defeat the incremental transport design.
+          docker pull "$BACKEND_IMAGE"
+          docker pull "$FRONTEND_IMAGE"
+
+      - name: Publish per-component fallback archives once
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          command -v zstd >/dev/null 2>&1 || { sudo apt-get update -qq && sudo apt-get install -y -qq zstd; }
+
+          release_has_assets() {
+            local tag="$1" asset="$2"
+            gh release view "$tag" --repo "$GITHUB_REPOSITORY" --json assets --jq '.assets[].name' 2>/dev/null \
+              | grep -Fxq "$asset" \
+              && gh release view "$tag" --repo "$GITHUB_REPOSITORY" --json assets --jq '.assets[].name' 2>/dev/null \
+              | grep -Fxq 'SHA256SUMS'
+          }
+
+          retry_gh() {
+            local attempt
+            for attempt in 1 2 3 4; do
+              if "$@"; then return 0; fi
+              [[ "$attempt" == "4" ]] && return 1
+              sleep $((attempt * 5))
+            done
+          }
+
+          publish_component() {
+            local kind="$1" hash="$2" image="$3" tag="$4" asset="$5"
+            local dir="component-${kind}"
+            if release_has_assets "$tag" "$asset"; then
+              echo "Fallback already exists for ${kind} ${hash}; skipping archive creation"
+              return 0
+            fi
+
+            rm -rf "$dir"
+            mkdir -p "$dir"
+            docker save "$image" | zstd -T0 -10 -o "$dir/$asset"
+            (cd "$dir" && sha256sum "$asset" > SHA256SUMS)
+
+            if gh release view "$tag" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+              retry_gh gh release upload "$tag" "$dir/$asset" "$dir/SHA256SUMS" --clobber --repo "$GITHUB_REPOSITORY"
+            else
+              retry_gh gh release create "$tag" "$dir/$asset" "$dir/SHA256SUMS" \
+                --target "$GITHUB_SHA" --prerelease \
+                --title "Otclick ${kind} component ${hash:0:12}" \
+                --notes "Fallback Linux amd64 image archive for immutable ${kind} component hash ${hash}." \
+                --repo "$GITHUB_REPOSITORY"
+            fi
+          }
+
+          publish_component backend "$BACKEND_HASH" aiautoclicker-backend:latest \
+            "$BACKEND_FALLBACK_TAG" otclick-backend-linux-amd64.tar.zst
+          publish_component frontend "$FRONTEND_HASH" aiautoclicker-frontend:latest \
+            "$FRONTEND_FALLBACK_TAG" otclick-frontend-linux-amd64.tar.zst
+
+      - name: Package fresh-install compatibility bundle
+        id: fresh
+        run: |
+          set -euo pipefail
+          mkdir -p fresh-install
           docker save aiautoclicker-backend:latest aiautoclicker-frontend:latest \
-            | gzip -1 > release/otclick-images-linux-amd64.tar.gz
-          printf '{"git_sha":"%s","architecture":"linux/amd64","bundle":"otclick-images-linux-amd64.tar.gz"}\n' \
-            "$GITHUB_SHA" > release/manifest.json
-          (
-            cd release
-            sha256sum manifest.json otclick-images-linux-amd64.tar.gz > SHA256SUMS
-          )
+            | gzip -1 > fresh-install/otclick-images-linux-amd64.tar.gz
+          echo "bundle_size=$(du -h fresh-install/otclick-images-linux-amd64.tar.gz | cut -f1)" >> "$GITHUB_OUTPUT"
 
-      - name: Publish exact-commit release
+      - name: Package exact-commit v2 manifest
+        id: package
+        run: |
+          set -euo pipefail
+          mkdir -p artifacts
+          cp install.sh install-update.sh docker-compose.yml docker-compose.prebuilt.yml artifacts/
+          cp infra/frontend-runtime-env.sh artifacts/frontend-runtime-env.sh
+
+          python3 - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+
+          out = Path("artifacts")
+          manifest = {
+              "schema_version": 2,
+              "repository": os.environ["GITHUB_REPOSITORY"],
+              "git_sha": os.environ["GITHUB_SHA"],
+              "git_ref": os.environ["GITHUB_REF"],
+              "workflow_run_id": os.environ["GITHUB_RUN_ID"],
+              "architecture": "linux/amd64",
+              "components": {
+                  "backend": {
+                      "hash": os.environ["BACKEND_HASH"],
+                      "image": os.environ["BACKEND_IMAGE"],
+                      "fallback_tag": os.environ["BACKEND_FALLBACK_TAG"],
+                      "fallback_asset": "otclick-backend-linux-amd64.tar.zst",
+                  },
+                  "frontend": {
+                      "hash": os.environ["FRONTEND_HASH"],
+                      "image": os.environ["FRONTEND_IMAGE"],
+                      "fallback_tag": os.environ["FRONTEND_FALLBACK_TAG"],
+                      "fallback_asset": "otclick-frontend-linux-amd64.tar.zst",
+                  },
+              },
+              "hashes": {
+                  "compose": os.environ["COMPOSE_HASH"],
+                  "infra": os.environ["INFRA_HASH"],
+                  "migrations": os.environ["MIGRATIONS_HASH"],
+              },
+              "fresh_install_bundle": "otclick-images-linux-amd64.tar.gz",
+          }
+          (out / "manifest.json").write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")
+          PY
+
+          {
+            (cd artifacts && sha256sum manifest.json)
+            sha256sum fresh-install/otclick-images-linux-amd64.tar.gz | sed 's#fresh-install/##'
+          } > artifacts/SHA256SUMS
+          echo "metadata_size=$(du -sh artifacts | cut -f1)" >> "$GITHUB_OUTPUT"
+
+      - name: Publish exact-SHA incremental prerelease
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
           tag="install-${GITHUB_SHA}"
+          title="Otclick incremental install ${GITHUB_SHA:0:12}"
+          notes="Exact-SHA v2 manifest. Existing installs use content-addressed GHCR components; the large combined asset is retained only for fresh install compatibility."
+
+          retry_gh() {
+            local attempt
+            for attempt in 1 2 3 4; do
+              if "$@"; then return 0; fi
+              [[ "$attempt" == "4" ]] && return 1
+              sleep $((attempt * 5))
+            done
+          }
+
+          assets=(
+            artifacts/manifest.json
+            artifacts/SHA256SUMS
+            artifacts/install.sh
+            artifacts/install-update.sh
+            artifacts/docker-compose.yml
+            artifacts/docker-compose.prebuilt.yml
+            artifacts/frontend-runtime-env.sh
+            fresh-install/otclick-images-linux-amd64.tar.gz
+          )
+
           if gh release view "$tag" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
-            gh release upload "$tag" \
-              release/manifest.json \
-              release/SHA256SUMS \
-              release/otclick-images-linux-amd64.tar.gz \
-              --clobber --repo "$GITHUB_REPOSITORY"
+            retry_gh gh release upload "$tag" "${assets[@]}" --clobber --repo "$GITHUB_REPOSITORY"
           else
-            gh release create "$tag" \
-              release/manifest.json \
-              release/SHA256SUMS \
-              release/otclick-images-linux-amd64.tar.gz \
-              --target "$GITHUB_SHA" \
-              --prerelease \
-              --title "Otclick prebuilt install ${GITHUB_SHA:0:12}" \
-              --notes "Linux amd64 application images built by GitHub Actions for exact commit ${GITHUB_SHA}." \
-              --repo "$GITHUB_REPOSITORY"
+            retry_gh gh release create "$tag" "${assets[@]}" \
+              --target "$GITHUB_SHA" --prerelease \
+              --title "$title" --notes "$notes" --repo "$GITHUB_REPOSITORY"
           fi
+
+      - name: Verify published exact-SHA metadata
+        run: |
+          set -euo pipefail
+          base="https://github.com/${GITHUB_REPOSITORY}/releases/download/install-${GITHUB_SHA}"
+          tmp="$(mktemp -d)"
+          trap 'rm -rf "$tmp"' EXIT
+          curl -fsSL --retry 5 --retry-delay 2 "$base/manifest.json" -o "$tmp/manifest.json"
+          curl -fsSL --retry 5 --retry-delay 2 "$base/SHA256SUMS" -o "$tmp/SHA256SUMS"
+          expected="$(awk '$2 == "manifest.json" {print $1; exit}' "$tmp/SHA256SUMS")"
+          actual="$(sha256sum "$tmp/manifest.json" | awk '{print $1}')"
+          [[ -n "$expected" && "$actual" == "$expected" ]]
+          python3 - "$tmp/manifest.json" "$GITHUB_SHA" <<'PY'
+          import json, sys
+          data = json.load(open(sys.argv[1], encoding="utf-8"))
+          assert data["schema_version"] == 2
+          assert data["git_sha"] == sys.argv[2]
+          assert data["components"]["backend"]["image"].startswith("ghcr.io/")
+          assert "@sha256:" in data["components"]["backend"]["image"]
+          assert data["components"]["frontend"]["image"].startswith("ghcr.io/")
+          assert "@sha256:" in data["components"]["frontend"]["image"]
+          PY
+
+      - name: Publish artifact summary
+        run: |
+          {
+            echo "### Otclick incremental Linux install"
+            echo
+            echo "- Commit: \`${GITHUB_SHA}\`"
+            echo "- Backend component: \`${BACKEND_HASH}\`"
+            echo "- Frontend component: \`${FRONTEND_HASH}\`"
+            echo "- Backend image: \`${BACKEND_IMAGE}\`"
+            echo "- Frontend image: \`${FRONTEND_IMAGE}\`"
+            echo "- Exact release metadata: ${{ steps.package.outputs.metadata_size }}"
+            echo "- Fresh-install bundle: ${{ steps.fresh.outputs.bundle_size }} (existing installs never download it)"
+            echo "- Anonymous GHCR pull: verified"
+            echo "- Server-side application build: disabled"
+          } >> "$GITHUB_STEP_SUMMARY"
