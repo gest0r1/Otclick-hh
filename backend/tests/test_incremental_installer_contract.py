@@ -139,3 +139,11 @@ def test_curl_pipe_cannot_leak_remaining_installer_source_into_pull_tty():
     assert "script -qefc" in updater
     assert '"$transcript" </dev/null' in updater
     assert 'docker pull "$image_ref" </dev/null' in updater
+
+
+def test_backend_health_checks_use_health_endpoint():
+    updater = _read("install-update.sh")
+    assert "wait_http http://127.0.0.1:8000/health backend 45" in updater
+    assert "require_http http://127.0.0.1:8000/health backend api 90" in updater
+    assert "wait_http http://127.0.0.1:8000 backend 45" not in updater
+    assert "require_http http://127.0.0.1:8000 backend api 90" not in updater

@@ -506,11 +506,11 @@ if [[ "$BACKEND_CHANGED" == "1" || "$COMPOSE_CHANGED" == "1" || "$INFRA_CHANGED"
 else
   compose up -d --no-build --pull never api worker >>"$LOG_FILE" 2>&1
 fi
-if ! wait_http http://127.0.0.1:8000 backend 45; then
+if ! wait_http http://127.0.0.1:8000/health backend 45; then
   log "      backend health failed; force-recreating api/worker once"
   runtime_diagnostics api
   compose up -d --no-build --pull never --force-recreate api worker >>"$LOG_FILE" 2>&1
-  require_http http://127.0.0.1:8000 backend api 90
+  require_http http://127.0.0.1:8000/health backend api 90
 fi
 
 if [[ "$FRONTEND_CHANGED" == "1" || "$COMPOSE_CHANGED" == "1" || "$INFRA_CHANGED" == "1" ]]; then
