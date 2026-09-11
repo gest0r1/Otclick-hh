@@ -51,13 +51,12 @@ jobs:
         run: |
           set -euo pipefail
           cid="$(docker create aiautoclicker-frontend:latest)"
-          trap 'docker rm -f "$cid" >/dev/null 2>&1 || true' EXIT
-          docker export "$cid" | tar -xO app/.next/BUILD_ID >/dev/null
-          docker export "$cid" | tar -x 2>/dev/null
-          grep -RIl '__OTCLICK_SUPABASE_URL__' app/.next >/dev/null
-          grep -RIl '__OTCLICK_SUPABASE_ANON_KEY__' app/.next >/dev/null
-          grep -RIl '__OTCLICK_API_URL__' app/.next >/dev/null
-          rm -rf app
+          tmpdir="$(mktemp -d)"
+          trap 'docker rm -f "$cid" >/dev/null 2>&1 || true; rm -rf "$tmpdir"' EXIT
+          docker cp "$cid":/app/.next "$tmpdir/.next"
+          grep -RIl '__OTCLICK_SUPABASE_URL__' "$tmpdir/.next" >/dev/null
+          grep -RIl '__OTCLICK_SUPABASE_ANON_KEY__' "$tmpdir/.next" >/dev/null
+          grep -RIl '__OTCLICK_API_URL__' "$tmpdir/.next" >/dev/null
 
       - name: Package images and manifest
         run: |
