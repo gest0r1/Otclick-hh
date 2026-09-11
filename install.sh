@@ -84,7 +84,6 @@ load_prebuilt_images() {
   release_tag="install-${git_sha}"
   release_base="https://github.com/${RELEASE_REPO}/releases/download/${release_tag}"
   tmpdir="$(mktemp -d)"
-  trap 'rm -rf "$tmpdir"' RETURN
 
   log "Waiting for GitHub Actions prebuilt images for ${git_sha:0:12}"
   ready=0
@@ -99,7 +98,10 @@ load_prebuilt_images() {
     fi
     sleep 5
   done
-  [[ "$ready" == "1" ]] || die "Prebuilt release ${release_tag} was not published. Server-side Docker build is intentionally disabled. Check GitHub Actions build-artifact workflow."
+  if [[ "$ready" != "1" ]]; then
+    rm -rf "$tmpdir"
+    die "Prebuilt release ${release_tag} was not published. Server-side Docker build is intentionally disabled. Check GitHub Actions build-artifact workflow."
+  fi
 
   manifest_sha="$(python3 - "$tmpdir/manifest.json" <<'PY'
 import json, sys
@@ -107,7 +109,10 @@ with open(sys.argv[1], encoding="utf-8") as fh:
     print(json.load(fh).get("git_sha", ""))
 PY
 )"
-  [[ "$manifest_sha" == "$git_sha" ]] || die "Artifact SHA mismatch: manifest=$manifest_sha checkout=$git_sha"
+  if [[ "$manifest_sha" != "$git_sha" ]]; then
+    rm -rf "$tmpdir"
+    die "Artifact SHA mismatch: manifest=$manifest_sha checkout=$git_sha"
+  fi
 
   log "Downloading prebuilt backend/frontend images"
   curl -fL --retry 5 --retry-delay 3 --retry-all-errors \
@@ -123,6 +128,8 @@ PY
 
   log "Loading verified application images into Docker"
   gzip -dc "$tmpdir/otclick-images-linux-amd64.tar.gz" | docker load
+  rm -rf "$tmpdir"
+
   docker image inspect aiautoclicker-backend:latest >/dev/null 2>&1 \
     || die "Prebuilt backend image was not loaded"
   docker image inspect aiautoclicker-frontend:latest >/dev/null 2>&1 \
