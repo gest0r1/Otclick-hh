@@ -1,7 +1,7 @@
 from unittest.mock import AsyncMock, patch
 
-from fastapi import HTTPException
 import pytest
+from fastapi import HTTPException
 
 
 RUN = {
