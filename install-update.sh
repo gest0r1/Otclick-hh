@@ -27,6 +27,12 @@ if [[ "${EUID}" -ne 0 ]]; then
   exit 1
 fi
 
+# The updater is deliberately non-interactive. When install.sh itself is run as
+# `curl ... | bash`, stdin may still contain unread bytes from install.sh after
+# the exec handoff. Disconnect stdin before any child process can consume and
+# echo that source text into the terminal.
+exec </dev/null
+
 mkdir -p "$LOG_DIR" "$STATE_DIR"
 chmod 700 "$LOG_DIR" "$STATE_DIR"
 touch "$LOG_FILE"
@@ -282,7 +288,7 @@ docker_pull_visible() {
   local name="$1" image_ref="$2" transcript rc
 
   if [[ "$INTERACTIVE_TERMINAL" != "1" ]]; then
-    docker pull "$image_ref" >>"$LOG_FILE" 2>&1
+    docker pull "$image_ref" </dev/null >>"$LOG_FILE" 2>&1
     return $?
   fi
 
@@ -291,7 +297,7 @@ docker_pull_visible() {
   if command -v script >/dev/null 2>&1; then
     transcript="$(mktemp /tmp/otclick-docker-pull.XXXXXX.log)"
     rc=0
-    OTCLICK_PULL_IMAGE="$image_ref" script -qefc 'docker pull "$OTCLICK_PULL_IMAGE"' "$transcript" >&3 2>&3 || rc=$?
+    OTCLICK_PULL_IMAGE="$image_ref" script -qefc 'docker pull "$OTCLICK_PULL_IMAGE"' "$transcript" </dev/null >&3 2>&3 || rc=$?
     append_pull_transcript "$transcript" || true
     rm -f "$transcript"
     return "$rc"
@@ -300,7 +306,7 @@ docker_pull_visible() {
   # util-linux `script` is expected on supported Ubuntu hosts. If it is absent,
   # still send Docker directly to the original terminal so native progress stays
   # visible, at the cost of not mirroring the detailed pull transcript to the log.
-  docker pull "$image_ref" >&3 2>&3
+  docker pull "$image_ref" </dev/null >&3 2>&3
 }
 
 curl_download_visible() {
