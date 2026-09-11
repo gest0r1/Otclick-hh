@@ -129,3 +129,13 @@ def test_incremental_updater_exposes_native_pull_progress():
     assert "script -qefc" in updater
     assert "curl shows total, received, speed and ETA" in updater
     assert 'docker_pull_visible "$name" "$image_ref"' in updater
+
+
+def test_curl_pipe_cannot_leak_remaining_installer_source_into_pull_tty():
+    installer = _read("install.sh")
+    updater = _read("install-update.sh")
+    assert 'bash "$tmp_update" </dev/null' in installer
+    assert "exec </dev/null" in updater
+    assert "script -qefc" in updater
+    assert '"$transcript" </dev/null' in updater
+    assert 'docker pull "$image_ref" </dev/null' in updater

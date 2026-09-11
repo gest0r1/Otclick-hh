@@ -34,7 +34,7 @@ if [[ -d "$TARGET_DIR/.git" && "${OTCLICK_FULL_INSTALL:-0}" != "1" ]]; then
     OTCLICK_REF="$BRANCH" \
     OTCLICK_DIR="$TARGET_DIR" \
     OTCLICK_REPO_SLUG="$RELEASE_REPO" \
-    bash "$tmp_update"
+    bash "$tmp_update" </dev/null
 fi
 
 need git
