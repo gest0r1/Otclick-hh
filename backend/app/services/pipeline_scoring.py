@@ -1,7 +1,9 @@
 """Hard filter + structured LLM scoring for persistent vacancy_pipeline rows.
 
-The scorer is deliberately fail-closed: an LLM/config/parse failure moves the
-vacancy to score_error. It never turns an unknown result into a positive match.
+The scorer is deliberately fail-closed: a terminal LLM/config/parse failure
+moves the vacancy to score_error. Transient HH transport failures are different:
+they are deferred with bounded attempts and never become a false negative merely
+because hh.ru was temporarily unreachable.
 Only ACTIVE user-approved rules participate; proposals are invisible here.
 """
 
@@ -11,12 +13,14 @@ import asyncio
 import json
 import logging
 import re
+from datetime import UTC, datetime, timedelta
 
 from pydantic import BaseModel, Field
 
 from app.ai.agent import HHAgent
 from app.config import settings
 from app.db.supabase import service_client
+from app.hh import web
 from app.services import (
     candidate_context_service,
     context_fingerprints,
@@ -29,6 +33,9 @@ logger = logging.getLogger(__name__)
 
 MAX_SCORE_PER_RUN = 15
 SCORER_PROMPT_VERSION = 1
+MAX_TRANSIENT_SCORE_ATTEMPTS = 3
+HH_CIRCUIT_BREAKER_THRESHOLD = 2
+_TRANSIENT_RETRY_DELAYS_S = (60, 300)
 
 
 class ScoreComponents(BaseModel):
@@ -84,12 +91,7 @@ def _matching_rules(vacancy: dict, rules: list[dict] | None) -> list[dict]:
 
 
 def hard_filter_reason(vacancy: dict, rules: list[dict] | None = None) -> str | None:
-    """Reject explicit built-in mismatches and approved hard-reject rules only.
-
-    Approved user rules are evaluated before the built-in strategic-title escape:
-    if the user explicitly approved an absolute exclusion (for example, a company
-    or business type), a CIO title must not silently override it.
-    """
+    """Reject explicit built-in mismatches and approved hard-reject rules only."""
     for rule in _matching_rules(vacancy, rules):
         if rule.get("action") == "hard_reject":
             return f"approved_rule:{rule.get('id')}:{rule.get('name') or 'hard_reject'}"
@@ -106,11 +108,13 @@ def hard_filter_reason(vacancy: dict, rules: list[dict] | None = None) -> str | 
 
 
 def _load_discovered(user_id: str, limit: int) -> list[dict]:
+    due = datetime.now(UTC).isoformat().replace("+00:00", "Z")
     res = (
         service_client.table("vacancy_pipeline")
-        .select("id,hh_vacancy_id,title,employer_name,status")
+        .select("id,hh_vacancy_id,title,employer_name,status,score_attempts,next_score_at")
         .eq("user_id", user_id)
         .eq("status", "discovered")
+        .or_(f"next_score_at.is.null,next_score_at.lte.{due}")
         .order("discovered_at", desc=True)
         .limit(limit)
         .execute()
@@ -220,7 +224,13 @@ async def _score_with_llm(
     return StructuredVacancyScore.model_validate(result) if isinstance(result, dict) else result
 
 
-async def _mark_error(user_id: str, pipeline_id: str, error: Exception | str) -> None:
+async def _mark_error(
+    user_id: str,
+    pipeline_id: str,
+    error: Exception | str,
+    *,
+    extra_changes: dict | None = None,
+) -> None:
     message = str(error)[:2000] or "unknown_scoring_error"
     await asyncio.to_thread(
         vacancy_pipeline.transition,
@@ -232,8 +242,62 @@ async def _mark_error(user_id: str, pipeline_id: str, error: Exception | str) ->
             "score": None,
             "score_details": {"error": message},
             "score_explanation": message,
+            "next_score_at": None,
+            "last_score_error": message,
+            **(extra_changes or {}),
         },
     )
+
+
+async def _mark_transient_hh_error(
+    user_id: str,
+    row: dict,
+    error: Exception | str,
+) -> str:
+    pipeline_id = str(row["id"])
+    message = str(error)[:2000] or "transient_hh_error"
+    attempt = int(row.get("score_attempts") or 0) + 1
+
+    if attempt >= MAX_TRANSIENT_SCORE_ATTEMPTS:
+        await _mark_error(
+            user_id,
+            pipeline_id,
+            error,
+            extra_changes={
+                "score_attempts": attempt,
+                "score_details": {
+                    "error": message,
+                    "transient_hh": True,
+                    "attempt": attempt,
+                    "exhausted": True,
+                },
+            },
+        )
+        return "transient_error"
+
+    delay_s = _TRANSIENT_RETRY_DELAYS_S[min(attempt - 1, len(_TRANSIENT_RETRY_DELAYS_S) - 1)]
+    next_score_at = (datetime.now(UTC) + timedelta(seconds=delay_s)).isoformat()
+    changed = await asyncio.to_thread(
+        vacancy_pipeline.transition,
+        user_id=user_id,
+        pipeline_id=pipeline_id,
+        from_statuses=["scoring"],
+        to_status="discovered",
+        changes={
+            "score": None,
+            "score_attempts": attempt,
+            "next_score_at": next_score_at,
+            "last_score_error": message,
+            "score_details": {
+                "retryable_error": message,
+                "transient_hh": True,
+                "attempt": attempt,
+                "next_score_at": next_score_at,
+            },
+            "score_explanation": None,
+        },
+    )
+    return "retryable" if changed else "skipped"
 
 
 async def score_one(
@@ -291,6 +355,8 @@ async def score_one(
                         **score_fp,
                     },
                     "score_explanation": f"Hard filter: {reason}",
+                    "next_score_at": None,
+                    "last_score_error": None,
                 },
             )
             return "hard_filtered"
@@ -319,9 +385,19 @@ async def score_one(
                 "score_details": details,
                 "score_explanation": result.explanation,
                 "hard_filter_reason": None,
+                "next_score_at": None,
+                "last_score_error": None,
             },
         )
         return "scored" if changed else "skipped"
+    except web.HHTransientError as ex:
+        logger.warning(
+            "transient HH scoring failure user=%s vacancy=%s error=%s",
+            user_id,
+            pipeline_id,
+            ex,
+        )
+        return await _mark_transient_hh_error(user_id, row, ex)
     except Exception as ex:
         logger.warning("scoring failed user=%s vacancy=%s", user_id, pipeline_id, exc_info=True)
         await _mark_error(user_id, pipeline_id, ex)
@@ -336,7 +412,9 @@ async def score_user(user_id: str, limit: int = MAX_SCORE_PER_RUN) -> dict[str, 
         "hard_filtered": 0,
         "archived": 0,
         "errors": 0,
+        "retryable_errors": 0,
         "skipped": 0,
+        "circuit_breaker": 0,
     }
     if not rows:
         return summary
@@ -365,17 +443,39 @@ async def score_user(user_id: str, limit: int = MAX_SCORE_PER_RUN) -> dict[str, 
         return summary
 
     llm = HHAgent(user_id).llm
+    transient_streak = 0
     for row in rows:
         outcome = await score_one(user_id, row, context=context, llm=llm, rules=rules)
         if outcome == "scored":
             summary["scored"] += 1
+            transient_streak = 0
         elif outcome == "hard_filtered":
             summary["hard_filtered"] += 1
+            transient_streak = 0
         elif outcome == "archived":
             summary["archived"] += 1
+            transient_streak = 0
+        elif outcome == "retryable":
+            summary["retryable_errors"] += 1
+            transient_streak += 1
+        elif outcome == "transient_error":
+            summary["errors"] += 1
+            transient_streak += 1
         elif outcome == "error":
             summary["errors"] += 1
+            transient_streak = 0
         else:
             summary["skipped"] += 1
+            transient_streak = 0
+
+        if transient_streak >= HH_CIRCUIT_BREAKER_THRESHOLD:
+            summary["circuit_breaker"] = 1
+            logger.warning(
+                "HH scoring circuit open user=%s after %s consecutive transient failures",
+                user_id,
+                transient_streak,
+            )
+            break
+
     logger.info("scoring user=%s summary=%s", user_id, summary)
     return summary
