@@ -54,6 +54,19 @@ SECURITY DEFINER
 SET search_path = public
 AS $$
 BEGIN
+  -- A hard worker/container crash can leave a claimed run active forever and
+  -- the per-user unique index would then block every future manual run. The
+  -- normal batch is capped at 15 vacancies; two hours is deliberately much
+  -- longer than the expected cycle and acts only as crash recovery.
+  UPDATE search_runs
+  SET
+    status = 'failed',
+    error = 'worker lease expired after 2 hours',
+    finished_at = now(),
+    updated_at = now()
+  WHERE status IN ('discovery', 'scoring')
+    AND updated_at < now() - interval '2 hours';
+
   RETURN QUERY
   WITH candidate AS (
     SELECT id
