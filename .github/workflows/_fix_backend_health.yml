@@ -1,0 +1,59 @@
+name: Fix backend health endpoint
+
+on:
+  push:
+    branches:
+      - fix/backend-health-endpoint
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    if: github.event.head_commit.message != 'Fix backend health endpoint'
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: fix/backend-health-endpoint
+      - name: Patch backend health endpoint
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+
+          updater = Path('install-update.sh')
+          s = updater.read_text(encoding='utf-8')
+          old_wait = 'if ! wait_http http://127.0.0.1:8000 backend 45; then'
+          new_wait = 'if ! wait_http http://127.0.0.1:8000/health backend 45; then'
+          old_require = '  require_http http://127.0.0.1:8000 backend api 90'
+          new_require = '  require_http http://127.0.0.1:8000/health backend api 90'
+          if old_wait not in s:
+              raise SystemExit('backend wait_http root endpoint anchor not found')
+          if old_require not in s:
+              raise SystemExit('backend require_http root endpoint anchor not found')
+          s = s.replace(old_wait, new_wait, 1)
+          s = s.replace(old_require, new_require, 1)
+          updater.write_text(s, encoding='utf-8')
+
+          tests = Path('backend/tests/test_incremental_installer_contract.py')
+          t = tests.read_text(encoding='utf-8')
+          name = 'test_backend_health_checks_use_health_endpoint'
+          if name not in t:
+              t += '''\n\ndef test_backend_health_checks_use_health_endpoint():\n    updater = _read("install-update.sh")\n    assert "wait_http http://127.0.0.1:8000/health backend 45" in updater\n    assert "require_http http://127.0.0.1:8000/health backend api 90" in updater\n    assert "wait_http http://127.0.0.1:8000 backend 45" not in updater\n    assert "require_http http://127.0.0.1:8000 backend api 90" not in updater\n'''
+              tests.write_text(t, encoding='utf-8')
+          PY
+
+          bash -n install-update.sh
+          python3 -m py_compile backend/tests/test_incremental_installer_contract.py
+          grep -F 'wait_http http://127.0.0.1:8000/health backend 45' install-update.sh
+          grep -F 'require_http http://127.0.0.1:8000/health backend api 90' install-update.sh
+          ! grep -F 'wait_http http://127.0.0.1:8000 backend 45' install-update.sh
+          ! grep -F 'require_http http://127.0.0.1:8000 backend api 90' install-update.sh
+
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git add install-update.sh backend/tests/test_incremental_installer_contract.py
+          git commit -m 'Fix backend health endpoint'
+          git push origin HEAD:fix/backend-health-endpoint
