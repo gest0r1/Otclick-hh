@@ -31,14 +31,45 @@ def test_incremental_updater_never_downloads_combined_bundle_or_builds_locally()
     assert '--no-build' in updater
 
 
-def test_incremental_updater_recovers_pruned_component_and_preserves_env():
+def test_repeat_update_repairs_runtime_instead_of_exiting_early():
+    updater = _read("install-update.sh")
+    marker = 'code already up to date: $TARGET_SHA; continuing with artifact/runtime verification'
+    assert marker in updater
+    marker_pos = updater.index(marker)
+    reconcile_pos = updater.index('[6/7] reconciling/repairing stack without local builds')
+    assert marker_pos < reconcile_pos
+    # Regression: TARGET_SHA == OLD_SHA used to immediately `exit 0`, so a
+    # stopped frontend could never be repaired by rerunning the installer.
+    block = updater[marker_pos:reconcile_pos]
+    assert 'exit 0' not in block
+    assert 'force-recreating frontend once' in updater
+    assert 'runtime_diagnostics frontend' in updater
+    assert 'require_http http://127.0.0.1:3000 frontend frontend 90' in updater
+
+
+def test_cleanup_is_successful_when_no_temp_files_exist():
+    updater = _read("install-update.sh")
+    cleanup = updater[updater.index('cleanup() {'):updater.index('trap cleanup EXIT')]
+    assert 'return 0' in cleanup
+    assert '[[ -n "$MANIFEST_FILE" ]] &&' not in cleanup
+    assert '[[ -n "$SUMS_FILE" ]] &&' not in cleanup
+
+
+def test_incremental_updater_requires_exact_target_digest_not_just_latest_tag():
+    updater = _read("install-update.sh")
+    assert 'image_matches_target()' in updater
+    assert 'docker image inspect "$target_ref"' in updater
+    assert 'docker image inspect "$local_tag"' in updater
+    assert 'target_id=' in updater
+    assert 'local_id=' in updater
+    assert 'image_matches_target "$TARGET_BACKEND_IMAGE" aiautoclicker-backend:latest || BACKEND_CHANGED=1' in updater
+    assert 'image_matches_target "$TARGET_FRONTEND_IMAGE" aiautoclicker-frontend:latest || FRONTEND_CHANGED=1' in updater
+
+
+def test_incremental_updater_preserves_env():
     updater = _read("install-update.sh")
     assert '[[ -f "$INSTALL_DIR/.env" ]]' in updater
     assert 'restore the original .env before updating' in updater
-    assert 'docker image inspect aiautoclicker-backend:latest' in updater
-    assert 'docker image inspect aiautoclicker-frontend:latest' in updater
-    assert 'BACKEND_CHANGED=1' in updater
-    assert 'FRONTEND_CHANGED=1' in updater
     assert 'infra/bootstrap.py' not in updater
 
 
