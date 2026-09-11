@@ -20,6 +20,8 @@
 - `bash`, `git`, `curl`, Python 3, `gzip`, `sha256sum`;
 - Docker Engine with Docker Compose v2 (`docker compose`).
 
+`zstd` is needed only if anonymous GHCR access is unavailable and the updater has to use a per-component GitHub Release fallback. On Debian/Ubuntu the updater installs it automatically when that fallback is actually needed.
+
 ### Install or update — one command
 
 Use the same command for the first installation and every later update:
@@ -34,40 +36,62 @@ The canonical production directory is:
 /opt/otclick-hh
 ```
 
-The installer:
+The command has two deliberately different paths:
 
-1. clones or fast-forwards `main` in `/opt/otclick-hh`;
-2. creates `.env` only for a genuinely fresh installation;
-3. preserves the existing `.env`, PostgreSQL volume, accounts, tokens and encrypted HH credentials on updates;
-4. refuses to generate new secrets if an existing Otclick PostgreSQL container/volume is detected but `.env` is missing;
-5. waits for an **exact-commit prebuilt release** produced by GitHub Actions;
-6. verifies `manifest.json` and SHA-256 checksums;
-7. loads the ready backend/frontend Docker images;
-8. pulls only third-party infrastructure images;
-9. runs database migrations and recreates the application layer with `--no-build`.
+**Fresh install**
 
-### Production build policy
+1. clones `main` into `/opt/otclick-hh`;
+2. creates `.env` only when no existing Otclick database is detected;
+3. waits for the exact-SHA GitHub Actions release;
+4. downloads the combined prebuilt backend/frontend bundle once;
+5. verifies checksums and starts the stack with `--no-build`.
+
+**Existing installation / normal update**
+
+1. immediately delegates to `install-update.sh` before any combined bundle is downloaded;
+2. preserves the existing `.env`, PostgreSQL volumes, accounts, tokens and encrypted HH credentials;
+3. fetches only the small exact-SHA `manifest.json` + checksum metadata;
+4. compares content hashes for backend, frontend, Compose, infra and migrations;
+5. pulls only changed backend/frontend components from public GHCR by immutable digest, reusing Docker layers;
+6. downloads **0 application bytes** for unchanged components;
+7. uses a per-component GitHub Release archive only as a fallback if GHCR is unavailable;
+8. backs up PostgreSQL before schema changes, runs idempotent migrations and reconciles the stack with `--no-build`.
+
+The updater also refuses to continue if `/opt/otclick-hh/.env` is missing. It never generates replacement PostgreSQL/JWT/Fernet secrets for an existing installation.
+
+### Production build and transport policy
 
 **Production installation/update never builds backend or frontend on the server.**
 
-Application images are built by `.github/workflows/build-artifact.yml` in GitHub Actions and published as an exact-commit prerelease:
+Application images are built by `.github/workflows/build-artifact.yml` in GitHub Actions. Backend and frontend are published as immutable content-addressed GHCR images. Every Git commit also receives an exact-SHA v2 manifest release:
 
 ```text
 install-<git-sha>
 ```
 
-If that artifact is not ready or the artifact workflow failed, the installer waits and then fails. It does **not** silently fall back to `docker compose build`.
+Normal update path:
 
-This distinction is intentional:
+```text
+GitHub main
+    │
+    ├── tiny exact-SHA v2 manifest
+    │
+    ├── changed backend ──► GHCR immutable image ──► docker pull/layer cache
+    └── changed frontend ─► GHCR immutable image ──► docker pull/layer cache
+```
+
+The large combined release asset exists only for a fresh installation. An existing installation must never download it.
+
+If the exact manifest or required image is not available, the installer fails. It does **not** silently fall back to `docker compose build`.
 
 ```text
 Development machine: source -> local build/test -> GitHub
-Production server:    GitHub exact commit -> prebuilt images -> run/test
+Production server:    GitHub exact commit -> changed prebuilt layers -> run/test
 ```
 
 ### Existing installation
 
-The update command is still exactly the same:
+The update command remains exactly the same:
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/gest0r1/Otclick-hh/main/install.sh | bash
@@ -199,6 +223,19 @@ Never delete the database volume during a normal update.
 curl -fsSL https://raw.githubusercontent.com/gest0r1/Otclick-hh/main/install.sh | bash
 ```
 
+An ordinary update should show an incremental path such as:
+
+```text
+Existing installation detected ... using incremental updater
+[2/7] fetching exact-SHA incremental manifest
+[3/7] updating changed application components
+backend unchanged; 0 application bytes downloaded
+frontend: GHCR pull complete (cached layers reused)
+[6/7] reconciling stack without local builds
+```
+
+It should **not** show Docker BuildKit steps such as `[api 1/9]`, `[frontend 1/7]`, `docker build`, or a download of the combined ~GiB fresh-install bundle.
+
 ### Status
 
 ```bash
@@ -213,6 +250,12 @@ cd /opt/otclick-hh
 docker compose -f docker-compose.yml -f docker-compose.prebuilt.yml logs -f --tail=200 api
 docker compose -f docker-compose.yml -f docker-compose.prebuilt.yml logs -f --tail=200 worker
 docker compose -f docker-compose.yml -f docker-compose.prebuilt.yml logs --tail=200 migrate
+```
+
+Updater logs are written to:
+
+```text
+/var/log/otclick-hh/update-*.log
 ```
 
 ### Restart an application service
@@ -293,18 +336,22 @@ npm run build
 
 ## CI / artifact pipeline
 
-`.github/workflows/ci.yml` validates backend, frontend and extension tests.
+`.github/workflows/ci.yml` validates backend, frontend and extension tests, including the incremental-installer regression contract.
 
-`.github/workflows/build-artifact.yml` is the production image pipeline. For each relevant pushed commit it:
+`.github/workflows/build-artifact.yml` is the production image pipeline. For every pushed commit on `main` (and deployment test branches) it:
 
-1. validates installer scripts;
-2. builds `aiautoclicker-backend:latest`;
-3. builds a generic `aiautoclicker-frontend:latest` with runtime placeholders;
-4. verifies required placeholders are present;
-5. packs both images into `otclick-images-linux-amd64.tar.gz`;
-6. publishes `manifest.json`, `SHA256SUMS` and the image bundle in `install-<git-sha>`.
+1. validates installer syntax and the merged production Compose configuration;
+2. computes content hashes for backend, frontend, Compose, infra and migrations;
+3. reuses an existing immutable GHCR component when its content hash did not change;
+4. otherwise builds and publishes only the changed component;
+5. smoke-tests frontend runtime `NEXT_PUBLIC_*` injection;
+6. logs out of GHCR and verifies both component images can be pulled **anonymously**, exactly as a production server does;
+7. creates per-component Release fallbacks only once per content hash;
+8. retains a combined `otclick-images-linux-amd64.tar.gz` only for fresh install compatibility;
+9. publishes a schema-v2 exact-SHA `manifest.json` containing immutable image digests;
+10. downloads the published metadata again and verifies its SHA and image references.
 
-The installer accepts only the artifact whose manifest SHA exactly matches the checked-out repository SHA.
+The installer accepts only the manifest whose `git_sha` exactly matches the target repository SHA.
 
 ---
 
@@ -312,7 +359,8 @@ The installer accepts only the artifact whose manifest SHA exactly matches the c
 
 ```text
 Otclick-hh/
-├── install.sh                       # production one-command install/update
+├── install.sh                       # one-command entry; routes existing installs to incremental updater
+├── install-update.sh                # hash-aware GHCR incremental production updater
 ├── docker-compose.yml               # base self-hosted stack
 ├── docker-compose.prebuilt.yml      # production prebuilt-image/runtime-env override
 ├── .env.example
