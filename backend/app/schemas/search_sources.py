@@ -68,6 +68,23 @@ class SearchSourceResponse(BaseModel):
     updated_at: datetime | None = None
 
 
+SearchRunStatus = Literal[
+    "queued",
+    "discovery",
+    "scoring",
+    "completed",
+    "completed_with_errors",
+    "failed",
+]
+
+
 class ManualSearchRunResponse(BaseModel):
-    discovery: dict[str, int]
-    scoring: dict[str, int]
+    id: str
+    status: SearchRunStatus
+    discovery: dict[str, int] | None = None
+    scoring: dict[str, int] | None = None
+    error: str | None = None
+    created_at: datetime | None = None
+    started_at: datetime | None = None
+    finished_at: datetime | None = None
+    updated_at: datetime | None = None
