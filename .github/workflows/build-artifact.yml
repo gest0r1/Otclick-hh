@@ -1,0 +1,99 @@
+name: Build prebuilt install images
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+      - 'fix/**'
+
+permissions:
+  contents: write
+
+concurrency:
+  group: prebuilt-install-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build-linux-amd64:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Validate installer and production Compose contract
+        run: |
+          set -euo pipefail
+          bash -n install.sh
+          sh -n infra/frontend-runtime-env.sh
+          python3 infra/bootstrap.py --openai-key ci-placeholder
+          docker compose -f docker-compose.yml -f docker-compose.prebuilt.yml config >/dev/null
+          rm -f .env
+
+      - name: Build backend image
+        run: |
+          set -euo pipefail
+          docker build \
+            -f backend/Dockerfile \
+            -t aiautoclicker-backend:latest \
+            .
+
+      - name: Build generic frontend image
+        run: |
+          set -euo pipefail
+          docker build \
+            --build-arg NEXT_PUBLIC_SUPABASE_URL='https://otclick-runtime-supabase.invalid' \
+            --build-arg NEXT_PUBLIC_SUPABASE_ANON_KEY='__OTCLICK_SUPABASE_ANON_KEY__' \
+            --build-arg NEXT_PUBLIC_API_URL='https://otclick-runtime-api.invalid' \
+            --build-arg NEXT_PUBLIC_GOOGLE_AUTH_ENABLED='__OTCLICK_GOOGLE_AUTH_ENABLED__' \
+            -f frontend/Dockerfile \
+            -t aiautoclicker-frontend:latest \
+            frontend
+
+      - name: Verify frontend placeholders are present
+        run: |
+          set -euo pipefail
+          cid="$(docker create aiautoclicker-frontend:latest)"
+          tmpdir="$(mktemp -d)"
+          trap 'docker rm -f "$cid" >/dev/null 2>&1 || true; rm -rf "$tmpdir"' EXIT
+          docker cp "$cid":/app/.next "$tmpdir/.next"
+          grep -RIl 'https://otclick-runtime-supabase.invalid' "$tmpdir/.next" >/dev/null
+          grep -RIl '__OTCLICK_SUPABASE_ANON_KEY__' "$tmpdir/.next" >/dev/null
+          grep -RIl 'https://otclick-runtime-api.invalid' "$tmpdir/.next" >/dev/null
+
+      - name: Package images and manifest
+        run: |
+          set -euo pipefail
+          mkdir -p release
+          docker save aiautoclicker-backend:latest aiautoclicker-frontend:latest \
+            | gzip -1 > release/otclick-images-linux-amd64.tar.gz
+          printf '{"git_sha":"%s","architecture":"linux/amd64","bundle":"otclick-images-linux-amd64.tar.gz"}\n' \
+            "$GITHUB_SHA" > release/manifest.json
+          (
+            cd release
+            sha256sum manifest.json otclick-images-linux-amd64.tar.gz > SHA256SUMS
+          )
+
+      - name: Publish exact-commit release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          tag="install-${GITHUB_SHA}"
+          if gh release view "$tag" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            gh release upload "$tag" \
+              release/manifest.json \
+              release/SHA256SUMS \
+              release/otclick-images-linux-amd64.tar.gz \
+              --clobber --repo "$GITHUB_REPOSITORY"
+          else
+            gh release create "$tag" \
+              release/manifest.json \
+              release/SHA256SUMS \
+              release/otclick-images-linux-amd64.tar.gz \
+              --target "$GITHUB_SHA" \
+              --prerelease \
+              --title "Otclick prebuilt install ${GITHUB_SHA:0:12}" \
+              --notes "Linux amd64 application images built by GitHub Actions for exact commit ${GITHUB_SHA}." \
+              --repo "$GITHUB_REPOSITORY"
+          fi
