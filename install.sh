@@ -3,6 +3,7 @@ set -Eeuo pipefail
 
 REPO_URL="${OTCLICK_REPO_URL:-https://github.com/gest0r1/Otclick-hh.git}"
 BRANCH="${OTCLICK_BRANCH:-main}"
+DEFAULT_TARGET_DIR="/opt/otclick-hh"
 
 log() { printf '\n==> %s\n' "$*"; }
 die() { printf '\nERROR: %s\n' "$*" >&2; exit 1; }
@@ -12,10 +13,8 @@ if [[ -n "${1:-}" ]]; then
   TARGET_DIR="$1"
 elif [[ -n "${OTCLICK_DIR:-}" ]]; then
   TARGET_DIR="$OTCLICK_DIR"
-elif [[ -d /home/app/app/.git ]]; then
-  TARGET_DIR="/home/app/app"
 else
-  TARGET_DIR="$HOME/Otclick-hh"
+  TARGET_DIR="$DEFAULT_TARGET_DIR"
 fi
 
 need git
@@ -50,7 +49,16 @@ fi
 
 cd "$TARGET_DIR"
 
+existing_database_detected() {
+  docker container inspect aiautoclicker-db >/dev/null 2>&1 \
+    || docker volume inspect otclick-hh_supabase-db-data >/dev/null 2>&1
+}
+
 if [[ ! -f .env ]]; then
+  if existing_database_detected; then
+    die "Existing Otclick PostgreSQL data was detected, but $TARGET_DIR/.env is missing. Refusing to generate new secrets. Restore the original .env before continuing."
+  fi
+
   log "Creating .env with generated secrets"
   python3 infra/bootstrap.py --openai-key ""
   printf '\nOPENAI_API_KEY is empty. Add your OpenAI-compatible key to %s/.env when needed.\n' "$TARGET_DIR"
