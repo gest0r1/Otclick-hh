@@ -1,9 +1,7 @@
 from unittest.mock import AsyncMock, patch
 
 import pytest
-
 from fastapi import HTTPException
-
 
 RUN = {
     "id": "run-1",
