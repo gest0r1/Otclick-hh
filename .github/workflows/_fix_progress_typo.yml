@@ -1,0 +1,30 @@
+name: Fix installer progress typo
+
+on:
+  push:
+    branches:
+      - fix/installer-pull-progress
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: fix/installer-pull-progress
+      - name: Fix and validate updater
+        shell: bash
+        run: |
+          set -euo pipefail
+          grep -q 'INTERACTITVE_TERMINAL' install-update.sh
+          sed -i 's/INTERACTITVE_TERMINAL/INTERACTIVE_TERMINAL/g' install-update.sh
+          ! grep -q 'INTERACTITVE_TERMINAL' install-update.sh
+          bash -n install-update.sh
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git add install-update.sh
+          git commit -m 'Fix fallback progress terminal detection'
+          git push origin HEAD:fix/installer-pull-progress
