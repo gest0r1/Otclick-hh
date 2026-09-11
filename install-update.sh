@@ -305,7 +305,7 @@ docker_pull_visible() {
 
 curl_download_visible() {
   local label="$1" url="$2" output="$3"
-  if [[ "$INTERACTITVE_TERMINAL" == "1" ]]; then
+  if [[ "$INTERACTIVE_TERMINAL" == "1" ]]; then
     printf '[otclick]       %s: downloading (curl shows total, received, speed and ETA)\n' "$label" >&3
     curl -fL --retry 3 --retry-delay 2 --retry-all-errors --show-error \
       "$url" -o "$output" 2>&3
