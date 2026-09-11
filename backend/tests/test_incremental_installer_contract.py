@@ -118,3 +118,14 @@ def test_exact_release_checksum_contract_matches_fresh_and_incremental_clients()
     assert 'sha256sum fresh-install/otclick-images-linux-amd64.tar.gz' in workflow
     assert 'sha256sum -c SHA256SUMS' in fresh
     assert 'expected_manifest=' in updater
+
+
+def test_incremental_updater_exposes_native_pull_progress():
+    updater = _read("install-update.sh")
+    assert "exec 3>&1" in updater
+    assert '[[ -t 3 ]]' in updater
+    assert "image_transfer_size" in updater
+    assert "Docker layer progress shows downloaded / total and updates in place" in updater
+    assert "script -qefc" in updater
+    assert "curl shows total, received, speed and ETA" in updater
+    assert 'docker_pull_visible "$name" "$image_ref"' in updater

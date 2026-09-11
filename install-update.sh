@@ -31,6 +31,15 @@ mkdir -p "$LOG_DIR" "$STATE_DIR"
 chmod 700 "$LOG_DIR" "$STATE_DIR"
 touch "$LOG_FILE"
 chmod 600 "$LOG_FILE"
+
+# Preserve the caller's real terminal before stdout/stderr are redirected to tee.
+# Docker sees a TTY on fd 3 and therefore renders its native layer progress
+# in-place instead of emitting one new line for every progress update.
+INTERACTIVE_TERMINAL=0
+exec 3>&1
+if [[ -t 3 ]]; then
+  INTERACTIVE_TERMINAL=1
+fi
 exec > >(tee -a "$LOG_FILE") 2>&1
 
 log() { printf '[otclick] %s\n' "$*"; }
@@ -225,6 +234,87 @@ image_matches_target() {
   [[ -n "$target_id" && "$target_id" == "$local_id" ]]
 }
 
+
+image_transfer_size() {
+  local image_ref="$1"
+  docker manifest inspect "$image_ref" 2>/dev/null | python3 -c '
+import json, sys
+try:
+    data = json.load(sys.stdin)
+except Exception:
+    raise SystemExit(1)
+total = sum(int(layer.get("size") or 0) for layer in data.get("layers", []))
+if total <= 0:
+    raise SystemExit(1)
+n = float(total)
+units = ("B", "KiB", "MiB", "GiB", "TiB")
+for unit in units:
+    if n < 1024 or unit == units[-1]:
+        print(f"{n:.0f} {unit}" if unit == "B" else f"{n:.1f} {unit}")
+        break
+    n /= 1024
+'
+}
+
+append_pull_transcript() {
+  local transcript="$1"
+  [[ -s "$transcript" ]] || return 0
+  python3 - "$transcript" "$LOG_FILE" <<'PYLOG'
+from pathlib import Path
+import re
+import sys
+
+src = Path(sys.argv[1])
+dst = Path(sys.argv[2])
+ansi = re.compile(r"\x1b\[[0-?]*[ -/]*[@-~]")
+text = src.read_bytes().decode("utf-8", "replace")
+text = ansi.sub("", text).replace("\r", "\n")
+with dst.open("a", encoding="utf-8") as out:
+    for raw in text.splitlines():
+        line = raw.strip()
+        if not line or line.startswith("Script started on ") or line.startswith("Script done on "):
+            continue
+        out.write(line + "\n")
+PYLOG
+}
+
+docker_pull_visible() {
+  local name="$1" image_ref="$2" transcript rc
+
+  if [[ "$INTERACTIVE_TERMINAL" != "1" ]]; then
+    docker pull "$image_ref" >>"$LOG_FILE" 2>&1
+    return $?
+  fi
+
+  printf '[otclick]       %s: Docker layer progress shows downloaded / total and updates in place\n' "$name" >&3
+
+  if command -v script >/dev/null 2>&1; then
+    transcript="$(mktemp /tmp/otclick-docker-pull.XXXXXX.log)"
+    rc=0
+    OTCLICK_PULL_IMAGE="$image_ref" script -qefc 'docker pull "$OTCLICK_PULL_IMAGE"' "$transcript" >&3 2>&3 || rc=$?
+    append_pull_transcript "$transcript" || true
+    rm -f "$transcript"
+    return "$rc"
+  fi
+
+  # util-linux `script` is expected on supported Ubuntu hosts. If it is absent,
+  # still send Docker directly to the original terminal so native progress stays
+  # visible, at the cost of not mirroring the detailed pull transcript to the log.
+  docker pull "$image_ref" >&3 2>&3
+}
+
+curl_download_visible() {
+  local label="$1" url="$2" output="$3"
+  if [[ "$INTERACTITVE_TERMINAL" == "1" ]]; then
+    printf '[otclick]       %s: downloading (curl shows total, received, speed and ETA)\n' "$label" >&3
+    curl -fL --retry 3 --retry-delay 2 --retry-all-errors --show-error \
+      "$url" -o "$output" 2>&3
+  else
+    curl -fL --retry 3 --retry-delay 2 --retry-all-errors \
+      "$url" -o "$output" >>"$LOG_FILE" 2>&1
+  fi
+}
+
 OLD_SHA="$(git rev-parse HEAD)"
 OLD_BACKEND_HASH="$(component_hash backend)"
 OLD_FRONTEND_HASH="$(component_hash frontend)"
@@ -330,10 +420,15 @@ log "      changed/required: backend=$BACKEND_CHANGED frontend=$FRONTEND_CHANGED
 
 pull_component() {
   local name="$1" image_ref="$2" fallback_tag="$3" fallback_asset="$4" local_tag="$5"
-  local fallback_base fallback_sums fallback_file expected actual
+  local fallback_base fallback_sums fallback_file expected actual transfer_size
 
-  log "      $name: pulling immutable image from GHCR"
-  if docker pull "$image_ref" >>"$LOG_FILE" 2>&1; then
+  transfer_size="$(image_transfer_size "$image_ref" || true)"
+  if [[ -n "$transfer_size" ]]; then
+    log "      $name: pulling immutable image from GHCR (compressed image up to $transfer_size; cached layers are reused)"
+  else
+    log "      $name: pulling immutable image from GHCR"
+  fi
+  if docker_pull_visible "$name" "$image_ref"; then
     docker tag "$image_ref" "$local_tag"
     log "      $name: GHCR pull complete (cached layers reused)"
     return 0
@@ -348,8 +443,8 @@ pull_component() {
     || { rm -f "$fallback_sums" "$fallback_file"; return 21; }
   expected="$(awk -v asset="$fallback_asset" '$2 == asset || $2 == "./" asset {print $1; exit}' "$fallback_sums")"
   [[ -n "$expected" ]] || { rm -f "$fallback_sums" "$fallback_file"; return 22; }
-  curl -fL --retry 3 --retry-delay 2 --retry-all-errors \
-    "${fallback_base}/${fallback_asset}" -o "$fallback_file" >>"$LOG_FILE" 2>&1
+  curl_download_visible "$name Release fallback" \
+    "${fallback_base}/${fallback_asset}" "$fallback_file"
   actual="$(sha256sum "$fallback_file" | awk '{print $1}')"
   [[ "$actual" == "$expected" ]] || { rm -f "$fallback_sums" "$fallback_file"; return 23; }
   zstd -d -c "$fallback_file" | docker load >>"$LOG_FILE" 2>&1
