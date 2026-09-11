@@ -6,6 +6,10 @@ set -Eeuo pipefail
 # components from GHCR so Docker can reuse cached layers. GitHub Release
 # component archives are a fallback only; the combined fresh-install bundle is
 # never downloaded by this script.
+#
+# Important: an already-up-to-date checkout still runs the runtime reconciliation
+# path. This makes the same one-command installer usable as a repair command after
+# an interrupted deployment or a stopped/crashed application container.
 
 REPO_SLUG="${OTCLICK_REPO_SLUG:-gest0r1/Otclick-hh}"
 REF="${OTCLICK_REF:-main}"
@@ -37,15 +41,25 @@ on_error() {
   trap - ERR
   echo
   echo "[otclick] incremental update failed (exit $code)."
-  [[ -n "$BACKUP_FILE" ]] && echo "Database backup: $BACKUP_FILE"
+  if [[ -n "$BACKUP_FILE" ]]; then
+    echo "Database backup: $BACKUP_FILE"
+  fi
   echo "Log: $LOG_FILE"
   exit "$code"
 }
 trap on_error ERR
 
+# EXIT traps must always return 0. The previous form used `[[ ... ]] && rm ...`;
+# with empty temp-file variables the last test returned 1 and incorrectly fired
+# the ERR trap even after a successful `exit 0` on an up-to-date checkout.
 cleanup() {
-  [[ -n "$MANIFEST_FILE" ]] && rm -f "$MANIFEST_FILE"
-  [[ -n "$SUMS_FILE" ]] && rm -f "$SUMS_FILE"
+  if [[ -n "$MANIFEST_FILE" ]]; then
+    rm -f "$MANIFEST_FILE" || true
+  fi
+  if [[ -n "$SUMS_FILE" ]]; then
+    rm -f "$SUMS_FILE" || true
+  fi
+  return 0
 }
 trap cleanup EXIT
 
@@ -121,6 +135,24 @@ wait_http() {
     fi
     sleep 1
   done
+  return 1
+}
+
+runtime_diagnostics() {
+  local service="$1"
+  echo >&2
+  echo "[otclick] runtime diagnostics for $service:" >&2
+  compose ps -a >&2 || true
+  echo >&2
+  compose logs --no-color --tail=200 "$service" >&2 || true
+}
+
+require_http() {
+  local url="$1" label="$2" service="$3" timeout="${4:-90}"
+  if wait_http "$url" "$label" "$timeout"; then
+    return 0
+  fi
+  runtime_diagnostics "$service"
   die "$label did not become healthy: $url"
 }
 
@@ -136,13 +168,13 @@ wait_migrate() {
           log "      migrations complete"
           return 0
         fi
-        compose logs --no-color --tail=200 migrate >&2 || true
+        runtime_diagnostics migrate
         die "database migrations failed (exit ${exit_code:-unknown})"
       fi
     fi
     sleep 2
   done
-  compose logs --no-color --tail=200 migrate >&2 || true
+  runtime_diagnostics migrate
   die "database migrations did not finish"
 }
 
@@ -181,6 +213,18 @@ ensure_zstd() {
   command -v zstd >/dev/null 2>&1 || die "zstd is required only for the GitHub Release fallback, but could not be installed"
 }
 
+image_matches_target() {
+  local target_ref="$1" local_tag="$2" target_id local_id
+  # A locally built/stale :latest image is not proof that it matches the exact
+  # content-addressed artifact. The exact digest itself must exist locally and
+  # resolve to the same image ID as the runtime tag.
+  docker image inspect "$target_ref" >/dev/null 2>&1 || return 1
+  docker image inspect "$local_tag" >/dev/null 2>&1 || return 1
+  target_id="$(docker image inspect "$target_ref" --format '{{.Id}}')"
+  local_id="$(docker image inspect "$local_tag" --format '{{.Id}}')"
+  [[ -n "$target_id" && "$target_id" == "$local_id" ]]
+}
+
 OLD_SHA="$(git rev-parse HEAD)"
 OLD_BACKEND_HASH="$(component_hash backend)"
 OLD_FRONTEND_HASH="$(component_hash frontend)"
@@ -192,8 +236,7 @@ log "[1/7] checking repository head"
 git fetch --prune origin "$REF" >>"$LOG_FILE" 2>&1
 TARGET_SHA="$(git rev-parse "origin/$REF")"
 if [[ "$TARGET_SHA" == "$OLD_SHA" && "${OTCLICK_FORCE_UPDATE:-0}" != "1" ]]; then
-  log "already up to date: $TARGET_SHA"
-  exit 0
+  log "      code already up to date: $TARGET_SHA; continuing with artifact/runtime verification"
 fi
 
 log "[2/7] fetching exact-SHA incremental manifest"
@@ -277,9 +320,11 @@ MIGRATIONS_CHANGED=0
 [[ "$OLD_INFRA_HASH" != "$TARGET_INFRA_HASH" ]] && INFRA_CHANGED=1
 [[ "$OLD_MIGRATIONS_HASH" != "$TARGET_MIGRATIONS_HASH" ]] && MIGRATIONS_CHANGED=1
 
-# Hash equality is not sufficient if an image was manually pruned.
-docker image inspect aiautoclicker-backend:latest >/dev/null 2>&1 || BACKEND_CHANGED=1
-docker image inspect aiautoclicker-frontend:latest >/dev/null 2>&1 || FRONTEND_CHANGED=1
+# Do not trust a pre-existing :latest tag merely because the source hash did not
+# change. The interrupted migration from the old installer can leave an older
+# locally-built image under the same tag. Require the exact target digest.
+image_matches_target "$TARGET_BACKEND_IMAGE" aiautoclicker-backend:latest || BACKEND_CHANGED=1
+image_matches_target "$TARGET_FRONTEND_IMAGE" aiautoclicker-frontend:latest || FRONTEND_CHANGED=1
 
 log "      changed/required: backend=$BACKEND_CHANGED frontend=$FRONTEND_CHANGED compose=$COMPOSE_CHANGED infra=$INFRA_CHANGED migrations=$MIGRATIONS_CHANGED"
 
@@ -317,12 +362,12 @@ log "[3/7] updating changed application components"
 if [[ "$BACKEND_CHANGED" == "1" ]]; then
   pull_component backend "$TARGET_BACKEND_IMAGE" "$TARGET_BACKEND_FALLBACK_TAG" "$TARGET_BACKEND_FALLBACK_ASSET" "aiautoclicker-backend:latest"
 else
-  log "      backend unchanged; 0 application bytes downloaded"
+  log "      backend exact image already present; 0 application bytes downloaded"
 fi
 if [[ "$FRONTEND_CHANGED" == "1" ]]; then
   pull_component frontend "$TARGET_FRONTEND_IMAGE" "$TARGET_FRONTEND_FALLBACK_TAG" "$TARGET_FRONTEND_FALLBACK_ASSET" "aiautoclicker-frontend:latest"
 else
-  log "      frontend unchanged; 0 application bytes downloaded"
+  log "      frontend exact image already present; 0 application bytes downloaded"
 fi
 
 if [[ "$MIGRATIONS_CHANGED" == "1" ]]; then
@@ -346,27 +391,38 @@ else
   log "      compose unchanged; third-party image pull skipped"
 fi
 
-log "[6/7] reconciling stack without local builds"
-# Always recreate/run the idempotent migration job. This also recovers a stale
-# failed migrate container after a previous interrupted deployment.
+log "[6/7] reconciling/repairing stack without local builds"
+# Always run the idempotent migration job and reconcile every runtime service.
+# This is deliberate even when git is already current: a repeated installer run
+# doubles as a safe repair after an interrupted deployment.
 compose up -d --no-build --pull never db migrate >>"$LOG_FILE" 2>&1
 wait_migrate
 compose up -d --no-build --pull never db auth rest realtime storage storage-init kong >>"$LOG_FILE" 2>&1
-wait_http http://127.0.0.1:54321/auth/v1/health Supabase-auth 90
+require_http http://127.0.0.1:54321/auth/v1/health Supabase-auth auth 90
 
 if [[ "$BACKEND_CHANGED" == "1" || "$COMPOSE_CHANGED" == "1" || "$INFRA_CHANGED" == "1" ]]; then
   compose up -d --no-build --pull never --force-recreate api worker >>"$LOG_FILE" 2>&1
 else
   compose up -d --no-build --pull never api worker >>"$LOG_FILE" 2>&1
 fi
-wait_http http://127.0.0.1:8000/health backend 90
+if ! wait_http http://127.0.0.1:8000 backend 45; then
+  log "      backend health failed; force-recreating api/worker once"
+  runtime_diagnostics api
+  compose up -d --no-build --pull never --force-recreate api worker >>"$LOG_FILE" 2>&1
+  require_http http://127.0.0.1:8000 backend api 90
+fi
 
 if [[ "$FRONTEND_CHANGED" == "1" || "$COMPOSE_CHANGED" == "1" || "$INFRA_CHANGED" == "1" ]]; then
   compose up -d --no-build --pull never --force-recreate frontend >>"$LOG_FILE" 2>&1
 else
   compose up -d --no-build --pull never frontend >>"$LOG_FILE" 2>&1
 fi
-wait_http http://127.0.0.1:3000 frontend 90
+if ! wait_http http://127.0.0.1:3000 frontend 45; then
+  log "      frontend health failed; force-recreating frontend once"
+  runtime_diagnostics frontend
+  compose up -d --no-build --pull never --force-recreate frontend >>"$LOG_FILE" 2>&1
+  require_http http://127.0.0.1:3000 frontend frontend 90
+fi
 
 python3 - "$STATE_DIR/install-state.json" "$TARGET_SHA" "$TARGET_BACKEND_HASH" "$TARGET_FRONTEND_HASH" "$TARGET_COMPOSE_HASH" "$TARGET_INFRA_HASH" "$TARGET_MIGRATIONS_HASH" <<'PY'
 import json
@@ -389,8 +445,12 @@ path.write_text(json.dumps(state, indent=2) + "\n", encoding="utf-8")
 path.chmod(0o600)
 PY
 
-log "[7/7] update complete"
+log "[7/7] update/repair complete"
 log "      revision: $TARGET_SHA"
 log "      application components pulled: backend=$BACKEND_CHANGED frontend=$FRONTEND_CHANGED"
-[[ -n "$BACKUP_FILE" ]] && log "      DB backup: $BACKUP_FILE"
+if [[ -n "$BACKUP_FILE" ]]; then
+  log "      DB backup: $BACKUP_FILE"
+fi
+log "      frontend: http://127.0.0.1:3000 healthy"
+log "      backend: http://127.0.0.1:8000/health healthy"
 log "      log: $LOG_FILE"
