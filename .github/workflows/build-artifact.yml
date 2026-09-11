@@ -21,11 +21,14 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Validate installer scripts
+      - name: Validate installer and production Compose contract
         run: |
           set -euo pipefail
           bash -n install.sh
           sh -n infra/frontend-runtime-env.sh
+          python3 infra/bootstrap.py --openai-key ci-placeholder
+          docker compose -f docker-compose.yml -f docker-compose.prebuilt.yml config >/dev/null
+          rm -f .env
 
       - name: Build backend image
         run: |
@@ -39,9 +42,9 @@ jobs:
         run: |
           set -euo pipefail
           docker build \
-            --build-arg NEXT_PUBLIC_SUPABASE_URL='__OTCLICK_SUPABASE_URL__' \
+            --build-arg NEXT_PUBLIC_SUPABASE_URL='https://otclick-runtime-supabase.invalid' \
             --build-arg NEXT_PUBLIC_SUPABASE_ANON_KEY='__OTCLICK_SUPABASE_ANON_KEY__' \
-            --build-arg NEXT_PUBLIC_API_URL='__OTCLICK_API_URL__' \
+            --build-arg NEXT_PUBLIC_API_URL='https://otclick-runtime-api.invalid' \
             --build-arg NEXT_PUBLIC_GOOGLE_AUTH_ENABLED='__OTCLICK_GOOGLE_AUTH_ENABLED__' \
             -f frontend/Dockerfile \
             -t aiautoclicker-frontend:latest \
@@ -54,9 +57,9 @@ jobs:
           tmpdir="$(mktemp -d)"
           trap 'docker rm -f "$cid" >/dev/null 2>&1 || true; rm -rf "$tmpdir"' EXIT
           docker cp "$cid":/app/.next "$tmpdir/.next"
-          grep -RIl '__OTCLICK_SUPABASE_URL__' "$tmpdir/.next" >/dev/null
+          grep -RIl 'https://otclick-runtime-supabase.invalid' "$tmpdir/.next" >/dev/null
           grep -RIl '__OTCLICK_SUPABASE_ANON_KEY__' "$tmpdir/.next" >/dev/null
-          grep -RIl '__OTCLICK_API_URL__' "$tmpdir/.next" >/dev/null
+          grep -RIl 'https://otclick-runtime-api.invalid' "$tmpdir/.next" >/dev/null
 
       - name: Package images and manifest
         run: |
