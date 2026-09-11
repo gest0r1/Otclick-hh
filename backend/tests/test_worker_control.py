@@ -105,6 +105,7 @@ async def test_reconcile_drives_discovery_and_agent_without_plan_gate():
     flags = {"a": (True, False), "b": (False, True)}
     with (
         patch.object(worker_main, "active_user_flags", return_value=flags),
+        patch.object(worker_main, "_run_manual_search_job", new=AsyncMock(return_value=None)),
         patch.object(worker_main, "_run_discovery_if_due", new=AsyncMock()) as discovery,
     ):
         await worker_main._reconcile(registry)
@@ -128,6 +129,7 @@ async def test_agent_flag_is_honoured_for_every_user():
     flags = {"a": (True, True)}
     with (
         patch.object(worker_main, "active_user_flags", return_value=flags),
+        patch.object(worker_main, "_run_manual_search_job", new=AsyncMock(return_value=None)),
         patch.object(worker_main, "_run_discovery_if_due", new=AsyncMock()) as discovery,
     ):
         await worker_main._reconcile(registry)

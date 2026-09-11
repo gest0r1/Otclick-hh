@@ -1,8 +1,6 @@
 from __future__ import annotations
 
-import asyncio
-
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, status
 
 from app.api.deps import get_current_user
 from app.schemas.search_sources import (
@@ -13,10 +11,9 @@ from app.schemas.search_sources import (
     SearchURLPreviewRequest,
     SearchURLPreviewResponse,
 )
-from app.services import pipeline_scoring, search_source_service, source_discovery
+from app.services import search_run_service, search_source_service
 
 router = APIRouter(prefix="/api/search-sources", tags=["search-sources"])
-_manual_run_locks: dict[str, asyncio.Lock] = {}
 
 
 @router.post("/preview-url", response_model=SearchURLPreviewResponse)
@@ -27,20 +24,25 @@ async def preview_url(
     return SearchURLPreviewResponse(**(await search_source_service.preview_url(body.url)))
 
 
-@router.post("/run-now", response_model=ManualSearchRunResponse)
+@router.post(
+    "/run-now",
+    response_model=ManualSearchRunResponse,
+    status_code=status.HTTP_202_ACCEPTED,
+)
 async def run_now(user_id: str = Depends(get_current_user)):
-    """Run the same safe discovery + scoring path immediately.
+    """Queue the normal discovery + scoring pipeline and return immediately.
 
-    No sender code is imported or invoked here. Discovery is idempotent at the
-    persistent pipeline layer; scoring atomically claims discovered rows.
+    API and worker live in separate containers, so the durable PostgreSQL job is
+    the hand-off. Repeated clicks while a run is active are idempotent and return
+    the same active run instead of starting overlapping HH traffic.
     """
-    lock = _manual_run_locks.setdefault(user_id, asyncio.Lock())
-    if lock.locked():
-        raise HTTPException(status_code=409, detail="manual search run is already in progress")
-    async with lock:
-        discovery = await source_discovery.discover_user(user_id)
-        scoring = await pipeline_scoring.score_user(user_id)
-    return ManualSearchRunResponse(discovery=discovery, scoring=scoring)
+    row, _created = await search_run_service.enqueue(user_id)
+    return ManualSearchRunResponse(**row)
+
+
+@router.get("/runs/{run_id}", response_model=ManualSearchRunResponse)
+async def get_run(run_id: str, user_id: str = Depends(get_current_user)):
+    return ManualSearchRunResponse(**(await search_run_service.get_owned(user_id, run_id)))
 
 
 @router.get("", response_model=list[SearchSourceResponse])

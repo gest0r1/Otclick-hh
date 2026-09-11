@@ -5,6 +5,9 @@ immediate apply. Discovery writes into `vacancy_pipeline`; scoring enriches the
 vacancy over the authenticated HH web session and persists a structured score.
 Real sending is a separate future worker fed exclusively by approved send jobs.
 
+Manual `run-now` requests are durable `search_runs` jobs. They are processed by
+this worker even when scheduled discovery is disabled for the user.
+
 The recruiter agent is an independent autonomous loop available to every user.
 """
 
@@ -19,6 +22,7 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
+from app.services import search_run_service
 from app.services.pipeline_scoring import score_user
 from app.services.source_discovery import discover_user
 from app.services.worker_control import active_user_flags
@@ -57,7 +61,7 @@ async def _run_discovery_if_due(user_id: str, enabled: bool) -> None:
     logger.info("discovery complete user=%s summary=%s", user_id, discovery_summary)
 
     # Scoring is sequential and capped per run. It has no send side effects and
-    # is fail-closed: enrichment/LLM errors become score_error, never auto-keep.
+    # is fail-closed: terminal enrichment/LLM errors become score_error.
     try:
         scoring_summary = await score_user(user_id)
     except Exception:
@@ -66,7 +70,53 @@ async def _run_discovery_if_due(user_id: str, enabled: bool) -> None:
     logger.info("scoring complete user=%s summary=%s", user_id, scoring_summary)
 
 
+async def _run_manual_search_job() -> str | None:
+    """Claim and execute one durable manual search job.
+
+    One job per reconcile keeps HH traffic serialized. The API returns 202 before
+    this starts, so the run duration is no longer coupled to proxy/browser timeouts.
+    """
+    job = await search_run_service.claim_next()
+    if not job:
+        return None
+
+    run_id = str(job["id"])
+    user_id = str(job["user_id"])
+    discovery_summary: dict | None = None
+    logger.info("manual search run start run=%s user=%s", run_id, user_id)
+    try:
+        discovery_summary = await discover_user(user_id)
+        changed = await search_run_service.begin_scoring(run_id, discovery_summary)
+        if not changed:
+            raise RuntimeError("manual search run changed before scoring")
+
+        scoring_summary = await score_user(user_id)
+        await search_run_service.complete(
+            run_id,
+            discovery=discovery_summary,
+            scoring=scoring_summary,
+        )
+        # A manual run just refreshed this user's search sources; do not repeat
+        # scheduled discovery immediately in the same reconcile pass.
+        _next_discovery_at[user_id] = _monotonic() + DISCOVERY_INTERVAL_S
+        logger.info(
+            "manual search run complete run=%s user=%s discovery=%s scoring=%s",
+            run_id,
+            user_id,
+            discovery_summary,
+            scoring_summary,
+        )
+    except Exception as ex:
+        await search_run_service.fail(run_id, ex, discovery=discovery_summary)
+        logger.exception("manual search run failed run=%s user=%s", run_id, user_id)
+    return user_id
+
+
 async def _reconcile(registry) -> None:
+    # Manual jobs are independent of profiles.worker_enabled and therefore must
+    # be claimed before reconciling scheduled discovery flags.
+    manual_user = await _run_manual_search_job()
+
     loop = asyncio.get_running_loop()
     flags = await loop.run_in_executor(None, active_user_flags)
 
@@ -76,7 +126,8 @@ async def _reconcile(registry) -> None:
     desired_agent: dict[str, bool] = {}
     for uid, (discovery_on, agent_on) in flags.items():
         desired_agent[uid] = agent_on
-        await _run_discovery_if_due(uid, discovery_on)
+        if uid != manual_user:
+            await _run_discovery_if_due(uid, discovery_on)
 
     # A recruiter loop can outlive the flag row between reconciles; stop it if
     # the user is no longer desired. Apply is always false here by construction.
