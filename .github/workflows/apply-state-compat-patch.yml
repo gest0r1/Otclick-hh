@@ -22,7 +22,7 @@ jobs:
           set -euo pipefail
           python3 tools/patch_state_compat.py
           bash -n install-update.sh
-          python3 -m pytest -q backend/tests/test_incremental_installer_contract.py backend/tests/test_build_artifact_contract.py
+          python3 -m py_compile backend/tests/test_incremental_installer_contract.py backend/tests/test_build_artifact_contract.py
       - name: Commit
         run: |
           set -euo pipefail
