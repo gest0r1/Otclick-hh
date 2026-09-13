@@ -1,0 +1,32 @@
+name: Apply release-first updater patch
+
+on:
+  push:
+    branches:
+      - perf/release-first-image-transport
+    paths:
+      - .github/workflows/apply-release-first-patch.yml
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10
+        with:
+          ref: perf/release-first-image-transport
+      - name: Apply deterministic patch
+        run: |
+          python3 tools/apply_release_first_patch.py
+          bash -n install-update.sh
+          python3 -m py_compile backend/tests/test_incremental_installer_contract.py backend/tests/test_build_artifact_contract.py
+      - name: Commit patch
+        run: |
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git add install-update.sh .env.example .github/workflows/build-artifact.yml backend/tests/test_incremental_installer_contract.py backend/tests/test_build_artifact_contract.py
+          git commit -m "perf: prefer Release component transport and persist Buildx cache"
+          git push origin HEAD:perf/release-first-image-transport
