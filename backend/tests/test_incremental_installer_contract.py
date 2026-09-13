@@ -54,15 +54,21 @@ def test_cleanup_is_successful_when_no_temp_files_exist():
     assert '[[ -n "$SUMS_FILE" ]] &&' not in cleanup
 
 
-def test_incremental_updater_requires_exact_target_digest_not_just_latest_tag():
+def test_incremental_updater_verifies_loaded_image_against_persisted_component_state():
     updater = _read("install-update.sh")
     assert 'image_matches_target()' in updater
+    assert 'install-state.json' in updater
+    assert 'backend_image_id' in updater
+    assert 'frontend_image_id' in updater
+    assert 'image_matches_target "$TARGET_BACKEND_HASH" "$TARGET_BACKEND_IMAGE" aiautoclicker-backend:latest backend || BACKEND_CHANGED=1' in updater
+    assert 'image_matches_target "$TARGET_FRONTEND_HASH" "$TARGET_FRONTEND_IMAGE" aiautoclicker-frontend:latest frontend || FRONTEND_CHANGED=1' in updater
+
+
+def test_incremental_updater_accepts_existing_exact_digest_during_state_v1_upgrade():
+    updater = _read("install-update.sh")
     assert 'docker image inspect "$target_ref"' in updater
-    assert 'docker image inspect "$local_tag"' in updater
-    assert 'target_id=' in updater
-    assert 'local_id=' in updater
-    assert 'image_matches_target "$TARGET_BACKEND_IMAGE" aiautoclicker-backend:latest || BACKEND_CHANGED=1' in updater
-    assert 'image_matches_target "$TARGET_FRONTEND_IMAGE" aiautoclicker-frontend:latest || FRONTEND_CHANGED=1' in updater
+    assert 'target_id="$(docker image inspect "$target_ref"' in updater
+    assert '[[ -n "$target_id" && "$target_id" == "$local_id" ]]' in updater
 
 
 def test_incremental_updater_preserves_env():
@@ -72,14 +78,16 @@ def test_incremental_updater_preserves_env():
     assert 'infra/bootstrap.py' not in updater
 
 
-def test_incremental_updater_uses_release_fallback_only_after_ghcr_failure():
+def test_incremental_updater_is_release_first_with_configurable_transport():
     updater = _read("install-update.sh")
-    ghcr = updater.index('docker pull "$image_ref"')
-    fallback = updater.index('using component Release fallback')
-    zstd = updater.index('ensure_zstd')
-    assert ghcr < fallback
-    assert zstd < fallback
-    assert 'command -v zstd' in updater
+    env_example = _read(".env.example")
+    assert 'OTCLICK_IMAGE_TRANSPORT:-$(env_get OTCLICK_IMAGE_TRANSPORT)' in updater
+    assert 'requested="${requested:-release}"' in updater
+    assert 'auto)' in updater
+    assert 'release|ghcr)' in updater
+    assert 'component Release unavailable; falling back to GHCR' in updater
+    assert 'GHCR unavailable; falling back to component Release' in updater
+    assert 'OTCLICK_IMAGE_TRANSPORT=release' in env_example
 
 
 def test_artifact_workflow_is_content_addressed_and_tests_public_ghcr():
