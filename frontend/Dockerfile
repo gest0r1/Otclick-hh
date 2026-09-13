@@ -21,8 +21,9 @@ ENV NODE_ENV=production \
 
 # node:22-slim already provides the unprivileged `node` user (uid 1000).
 # Keep dependency files in their own layer so ordinary UI/page changes can
-# reuse the large runtime dependency layer from GHCR instead of downloading it
-# again with every frontend build.
+# reuse the large runtime dependency layer. CI persists the Buildx cache across
+# ephemeral GitHub runners; production can then reuse stable component content
+# instead of repeatedly transferring hundreds of MiB.
 COPY --from=builder --chown=node:node /app/.next/standalone/node_modules ./node_modules
 COPY --from=builder --chown=node:node /app/.next/standalone/package.json ./package.json
 COPY --from=builder --chown=node:node /app/.next/standalone/server.js ./server.js
