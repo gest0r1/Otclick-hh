@@ -17,15 +17,15 @@ jobs:
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10
         with:
           ref: perf/release-first-image-transport
-      - name: Patch updater, env example and contracts
-        env:
-          PATCH_GZ_B64: "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"
+      - name: Apply patch
         run: |
-          printf '%s' "$PATCH_GZ_B64" | base64 -d | gzip -d | python3
+          set -euo pipefail
+          python3 tools/patch_release_first.py
           bash -n install-update.sh
           python3 -m py_compile backend/tests/test_incremental_installer_contract.py backend/tests/test_build_artifact_contract.py
       - name: Commit patch
         run: |
+          set -euo pipefail
           git config user.name github-actions[bot]
           git config user.email 41898282+github-actions[bot]@users.noreply.github.com
           git add install-update.sh .env.example backend/tests/test_incremental_installer_contract.py backend/tests/test_build_artifact_contract.py
