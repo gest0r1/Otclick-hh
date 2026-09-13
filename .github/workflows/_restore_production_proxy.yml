@@ -18,7 +18,19 @@ jobs:
           fetch-depth: 0
 
       - name: Apply proxy restoration patch
-        run: python3 .github/scripts/restore_proxy.py
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          p = Path('.github/scripts/restore_proxy.py')
+          t = p.read_text(encoding='utf-8')
+          old = 'marker = "SERVICE_ROLE_KEY=\\n\\n"\nproxy_env = """SERVICE_ROLE_KEY='
+          new = 'marker = "ANON_KEY=\\nSERVICE_ROLE_KEY=\\n\\n"\nproxy_env = """ANON_KEY=\nSERVICE_ROLE_KEY='
+          if old not in t:
+              raise SystemExit('temporary env marker not found')
+          p.write_text(t.replace(old, new, 1), encoding='utf-8')
+          PY
+          python3 .github/scripts/restore_proxy.py
 
       - name: Validate patch
         shell: bash
