@@ -578,6 +578,9 @@ configure_proxy_mode
 if [[ "$COMPOSE_CHANGED" == "1" ]]; then
   log "      compose changed; refreshing pinned third-party images"
   compose pull db migrate auth rest realtime storage storage-init kong caddy >>"$LOG_FILE" 2>&1
+elif ! docker image inspect caddy:2-alpine >/dev/null 2>&1; then
+  log "      compose unchanged but Caddy image is missing; pulling Caddy only"
+  compose pull caddy >>"$LOG_FILE" 2>&1
 else
   log "      compose unchanged; third-party image pull skipped"
 fi

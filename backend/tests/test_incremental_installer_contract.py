@@ -183,3 +183,10 @@ def test_installers_restore_and_reconcile_caddy_without_local_app_builds():
     assert 'compose pull db migrate auth rest realtime storage storage-init kong caddy' in updater
     assert 'require_http "$CADDY_HEALTH_URL" internal-Caddy caddy 60' in updater
     assert 'docker compose build' not in updater
+
+
+def test_repeat_update_repairs_missing_caddy_image():
+    updater = _read("install-update.sh")
+    assert "docker image inspect caddy:2-alpine" in updater
+    assert "compose pull caddy" in updater
+    assert "compose unchanged but Caddy image is missing; pulling Caddy only" in updater
